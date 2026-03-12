@@ -9,17 +9,17 @@ import (
 	"time"
 
 	"github.com/gtkit/go-pay/alipay"
-	"github.com/gtkit/go-pay/manager"
+	"github.com/gtkit/go-pay/paymgr"
 	"github.com/gtkit/go-pay/wechat"
 	"github.com/gtkit/json"
 )
 
 // ----- 全局支付管理器 -----
 
-var payMgr *manager.Manager
+var payMgr *paymgr.Manager
 
 func initpay() {
-	payMgr = manager.NewManager()
+	payMgr = paymgr.NewManager()
 
 	ctx := context.Background()
 
@@ -88,11 +88,11 @@ func handleCreateOrder(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		Channel   manager.Channel   `json:"channel"`
-		TradeType manager.TradeType `json:"trade_type"`
-		Amount    int64             `json:"amount"` // 分
-		Subject   string            `json:"subject"`
-		ReturnURL string            `json:"return_url"` // 支付宝同步跳转（可选）
+		Channel   paymgr.Channel   `json:"channel"`
+		TradeType paymgr.TradeType `json:"trade_type"`
+		Amount    int64            `json:"amount"` // 分
+		Subject   string           `json:"subject"`
+		ReturnURL string           `json:"return_url"` // 支付宝同步跳转（可选）
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
@@ -103,7 +103,7 @@ func handleCreateOrder(w http.ResponseWriter, r *http.Request) {
 	outTradeNo := "ORD" + time.Now().Format("20060102150405") + "001"
 
 	ctx := r.Context()
-	resp, err := payMgr.UnifiedOrder(ctx, req.Channel, &manager.UnifiedOrderRequest{
+	resp, err := payMgr.UnifiedOrder(ctx, req.Channel, &paymgr.UnifiedOrderRequest{
 		OutTradeNo:  outTradeNo,
 		TotalAmount: req.Amount,
 		Subject:     req.Subject,
@@ -137,11 +137,11 @@ func handleCreateOrder(w http.ResponseWriter, r *http.Request) {
 //
 // GET /api/v1/orders?channel=wechat&out_trade_no=ORD20250305001
 func handleQueryOrder(w http.ResponseWriter, r *http.Request) {
-	channel := manager.Channel(r.URL.Query().Get("channel"))
+	channel := paymgr.Channel(r.URL.Query().Get("channel"))
 	outTradeNo := r.URL.Query().Get("out_trade_no")
 
 	ctx := r.Context()
-	resp, err := payMgr.QueryOrder(ctx, channel, &manager.QueryOrderRequest{
+	resp, err := payMgr.QueryOrder(ctx, channel, &paymgr.QueryOrderRequest{
 		OutTradeNo: outTradeNo,
 	})
 	if err != nil {
@@ -157,14 +157,14 @@ func handleQueryOrder(w http.ResponseWriter, r *http.Request) {
 //
 // POST /api/v1/notify/wechat
 func handleWechatNotify(w http.ResponseWriter, r *http.Request) {
-	handleNotify(w, r, manager.ChannelWechat)
+	handleNotify(w, r, paymgr.ChannelWechat)
 }
 
 // handleAlipayNotify 支付宝异步通知
 //
 // POST /api/v1/notify/alipay
 func handleAlipayNotify(w http.ResponseWriter, r *http.Request) {
-	handleNotify(w, r, manager.ChannelAlipay)
+	handleNotify(w, r, paymgr.ChannelAlipay)
 }
 
 // handleNotify 通用通知处理
@@ -175,7 +175,7 @@ func handleAlipayNotify(w http.ResponseWriter, r *http.Request) {
 //  3. 幂等处理（同一通知可能推送多次）
 //  4. 更新订单状态
 //  5. 回写 ACK
-func handleNotify(w http.ResponseWriter, r *http.Request, ch manager.Channel) {
+func handleNotify(w http.ResponseWriter, r *http.Request, ch paymgr.Channel) {
 	ctx := r.Context()
 
 	result, err := payMgr.ParseNotify(ctx, ch, r)
@@ -236,12 +236,12 @@ func handleNotify(w http.ResponseWriter, r *http.Request, ch manager.Channel) {
 //	}
 func handleRefund(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Channel      manager.Channel `json:"channel"`
-		OutTradeNo   string          `json:"out_trade_no"`
-		OutRefundNo  string          `json:"out_refund_no"`
-		RefundAmount int64           `json:"refund_amount"` // 分
-		TotalAmount  int64           `json:"total_amount"`  // 分
-		Reason       string          `json:"reason"`
+		Channel      paymgr.Channel `json:"channel"`
+		OutTradeNo   string         `json:"out_trade_no"`
+		OutRefundNo  string         `json:"out_refund_no"`
+		RefundAmount int64          `json:"refund_amount"` // 分
+		TotalAmount  int64          `json:"total_amount"`  // 分
+		Reason       string         `json:"reason"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
@@ -249,7 +249,7 @@ func handleRefund(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := r.Context()
-	resp, err := payMgr.Refund(ctx, req.Channel, &manager.RefundRequest{
+	resp, err := payMgr.Refund(ctx, req.Channel, &paymgr.RefundRequest{
 		OutTradeNo:   req.OutTradeNo,
 		OutRefundNo:  req.OutRefundNo,
 		RefundAmount: req.RefundAmount,

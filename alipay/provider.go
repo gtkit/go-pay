@@ -8,7 +8,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/gtkit/go-pay/manager"
+	"github.com/gtkit/go-pay/paymgr"
 	"github.com/smartwalle/alipay/v3"
 )
 
@@ -94,15 +94,15 @@ func NewProvider(cfg *Config) (*Provider, error) {
 	}, nil
 }
 
-// Channel 实现 manager.Provider 接口.
-func (p *Provider) Channel() manager.Channel {
-	return manager.ChannelAlipay
+// Channel 实现 paymgr.Provider 接口.
+func (p *Provider) Channel() paymgr.Channel {
+	return paymgr.ChannelAlipay
 }
 
 // UnifiedOrder 统一下单.
-func (p *Provider) UnifiedOrder(ctx context.Context, req *manager.UnifiedOrderRequest) (*manager.UnifiedOrderResponse, error) {
-	resp := &manager.UnifiedOrderResponse{
-		Channel: manager.ChannelAlipay,
+func (p *Provider) UnifiedOrder(ctx context.Context, req *paymgr.UnifiedOrderRequest) (*paymgr.UnifiedOrderResponse, error) {
+	resp := &paymgr.UnifiedOrderResponse{
+		Channel: paymgr.ChannelAlipay,
 	}
 
 	// 金额转换：分 -> 元（支付宝金额单位为元，保留两位小数）
@@ -130,7 +130,7 @@ func (p *Provider) UnifiedOrder(ctx context.Context, req *manager.UnifiedOrderRe
 	}
 
 	switch req.TradeType {
-	case manager.TradeTypeNative:
+	case paymgr.TradeTypeNative:
 		// 当面付 —— 生成二维码
 		trade := alipay.TradePreCreate{}
 		trade.OutTradeNo = req.OutTradeNo
@@ -149,8 +149,8 @@ func (p *Provider) UnifiedOrder(ctx context.Context, req *manager.UnifiedOrderRe
 			return nil, wrapAlipayError(err)
 		}
 		if !result.IsSuccess() {
-			return nil, manager.NewChannelError(
-				manager.ChannelAlipay,
+			return nil, paymgr.NewChannelError(
+				paymgr.ChannelAlipay,
 				result.SubCode,
 				result.SubMsg,
 				nil,
@@ -158,7 +158,7 @@ func (p *Provider) UnifiedOrder(ctx context.Context, req *manager.UnifiedOrderRe
 		}
 		resp.CodeURL = result.QRCode
 
-	case manager.TradeTypeJSAPI:
+	case paymgr.TradeTypeJSAPI:
 		// 支付宝小程序支付 —— 使用 alipay.trade.create
 		trade := alipay.TradeCreate{}
 		trade.OutTradeNo = req.OutTradeNo
@@ -178,8 +178,8 @@ func (p *Provider) UnifiedOrder(ctx context.Context, req *manager.UnifiedOrderRe
 			return nil, wrapAlipayError(err)
 		}
 		if !result.IsSuccess() {
-			return nil, manager.NewChannelError(
-				manager.ChannelAlipay,
+			return nil, paymgr.NewChannelError(
+				paymgr.ChannelAlipay,
 				result.SubCode,
 				result.SubMsg,
 				nil,
@@ -187,7 +187,7 @@ func (p *Provider) UnifiedOrder(ctx context.Context, req *manager.UnifiedOrderRe
 		}
 		resp.PrepayID = result.TradeNo
 
-	case manager.TradeTypeApp:
+	case paymgr.TradeTypeApp:
 		// APP 支付 —— 返回签名后的订单字符串
 		trade := alipay.TradeAppPay{}
 		trade.OutTradeNo = req.OutTradeNo
@@ -208,7 +208,7 @@ func (p *Provider) UnifiedOrder(ctx context.Context, req *manager.UnifiedOrderRe
 		// TradeAppPay 返回的是签名后的完整参数字符串，APP 端直接调起
 		resp.AppParams = result
 
-	case manager.TradeTypeH5:
+	case paymgr.TradeTypeH5:
 		// 手机网站支付
 		trade := alipay.TradeWapPay{}
 		trade.OutTradeNo = req.OutTradeNo
@@ -233,14 +233,14 @@ func (p *Provider) UnifiedOrder(ctx context.Context, req *manager.UnifiedOrderRe
 		resp.PayURL = result.String()
 
 	default:
-		return nil, fmt.Errorf("%w: %s", manager.ErrUnsupportedType, req.TradeType)
+		return nil, fmt.Errorf("%w: %s", paymgr.ErrUnsupportedType, req.TradeType)
 	}
 
 	return resp, nil
 }
 
 // QueryOrder 查询订单.
-func (p *Provider) QueryOrder(ctx context.Context, req *manager.QueryOrderRequest) (*manager.QueryOrderResponse, error) {
+func (p *Provider) QueryOrder(ctx context.Context, req *paymgr.QueryOrderRequest) (*paymgr.QueryOrderResponse, error) {
 	trade := alipay.TradeQuery{}
 	if req.TransactionID != "" {
 		trade.TradeNo = req.TransactionID
@@ -255,18 +255,18 @@ func (p *Provider) QueryOrder(ctx context.Context, req *manager.QueryOrderReques
 	if !result.IsSuccess() {
 		// 特殊处理：订单不存在
 		if result.SubCode == "ACQ.TRADE_NOT_EXIST" {
-			return nil, manager.ErrOrderNotFound
+			return nil, paymgr.ErrOrderNotFound
 		}
-		return nil, manager.NewChannelError(
-			manager.ChannelAlipay,
+		return nil, paymgr.NewChannelError(
+			paymgr.ChannelAlipay,
 			result.SubCode,
 			result.SubMsg,
 			nil,
 		)
 	}
 
-	resp := &manager.QueryOrderResponse{
-		Channel:       manager.ChannelAlipay,
+	resp := &paymgr.QueryOrderResponse{
+		Channel:       paymgr.ChannelAlipay,
 		OutTradeNo:    result.OutTradeNo,
 		TransactionID: result.TradeNo,
 		TradeStatus:   mapAlipayTradeStatus(result.TradeStatus),
@@ -289,7 +289,7 @@ func (p *Provider) QueryOrder(ctx context.Context, req *manager.QueryOrderReques
 }
 
 // CloseOrder 关闭订单.
-func (p *Provider) CloseOrder(ctx context.Context, req *manager.CloseOrderRequest) error {
+func (p *Provider) CloseOrder(ctx context.Context, req *paymgr.CloseOrderRequest) error {
 	trade := alipay.TradeClose{}
 	trade.OutTradeNo = req.OutTradeNo
 
@@ -302,8 +302,8 @@ func (p *Provider) CloseOrder(ctx context.Context, req *manager.CloseOrderReques
 		if result.SubCode == "ACQ.TRADE_HAS_CLOSE" {
 			return nil
 		}
-		return manager.NewChannelError(
-			manager.ChannelAlipay,
+		return paymgr.NewChannelError(
+			paymgr.ChannelAlipay,
 			result.SubCode,
 			result.SubMsg,
 			nil,
@@ -313,7 +313,7 @@ func (p *Provider) CloseOrder(ctx context.Context, req *manager.CloseOrderReques
 }
 
 // Refund 申请退款.
-func (p *Provider) Refund(ctx context.Context, req *manager.RefundRequest) (*manager.RefundResponse, error) {
+func (p *Provider) Refund(ctx context.Context, req *paymgr.RefundRequest) (*paymgr.RefundResponse, error) {
 	trade := alipay.TradeRefund{}
 	trade.OutRequestNo = req.OutRefundNo
 	trade.RefundAmount = centToYuan(req.RefundAmount)
@@ -330,8 +330,8 @@ func (p *Provider) Refund(ctx context.Context, req *manager.RefundRequest) (*man
 		return nil, wrapAlipayError(err)
 	}
 	if !result.IsSuccess() {
-		return nil, manager.NewChannelError(
-			manager.ChannelAlipay,
+		return nil, paymgr.NewChannelError(
+			paymgr.ChannelAlipay,
 			result.SubCode,
 			result.SubMsg,
 			nil,
@@ -340,8 +340,8 @@ func (p *Provider) Refund(ctx context.Context, req *manager.RefundRequest) (*man
 
 	refundAmount := yuanToCent(result.RefundFee)
 
-	return &manager.RefundResponse{
-		Channel:      manager.ChannelAlipay,
+	return &paymgr.RefundResponse{
+		Channel:      paymgr.ChannelAlipay,
 		OutRefundNo:  req.OutRefundNo,
 		RefundID:     result.TradeNo, // 支付宝退款无单独退款号，使用交易号
 		RefundAmount: refundAmount,
@@ -351,19 +351,19 @@ func (p *Provider) Refund(ctx context.Context, req *manager.RefundRequest) (*man
 // ParseNotify 解析异步通知.
 //
 // smartwalle/alipay 的 DecodeNotification 内部已完成验签。
-func (p *Provider) ParseNotify(ctx context.Context, r *http.Request) (*manager.NotifyResult, error) {
+func (p *Provider) ParseNotify(ctx context.Context, r *http.Request) (*paymgr.NotifyResult, error) {
 	if err := r.ParseForm(); err != nil {
-		return nil, fmt.Errorf("%w: parse form: %v", manager.ErrInvalidNotify, err)
+		return nil, fmt.Errorf("%w: parse form: %v", paymgr.ErrInvalidNotify, err)
 	}
 
 	// DecodeNotification 内部调用 VerifySign 验签
 	noti, err := p.client.DecodeNotification(ctx, r.Form)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", manager.ErrInvalidSign, err)
+		return nil, fmt.Errorf("%w: %v", paymgr.ErrInvalidSign, err)
 	}
 
-	result := &manager.NotifyResult{
-		Channel:       manager.ChannelAlipay,
+	result := &paymgr.NotifyResult{
+		Channel:       paymgr.ChannelAlipay,
 		OutTradeNo:    noti.OutTradeNo,
 		TransactionID: noti.TradeNo,
 		TradeStatus:   mapAlipayTradeStatus(noti.TradeStatus),
@@ -410,18 +410,18 @@ func (p *Provider) ACKNotify(w http.ResponseWriter) {
 // --- 内部辅助函数 ---
 
 // mapAlipayTradeStatus 支付宝交易状态映射.
-func mapAlipayTradeStatus(status alipay.TradeStatus) manager.TradeStatus {
+func mapAlipayTradeStatus(status alipay.TradeStatus) paymgr.TradeStatus {
 	switch status {
 	case alipay.TradeStatusWaitBuyerPay:
-		return manager.TradeStatusPending
+		return paymgr.TradeStatusPending
 	case alipay.TradeStatusSuccess:
-		return manager.TradeStatusPaid
+		return paymgr.TradeStatusPaid
 	case alipay.TradeStatusFinished:
-		return manager.TradeStatusPaid // TRADE_FINISHED 表示交易完结（不可退款），但属于已支付
+		return paymgr.TradeStatusPaid // TRADE_FINISHED 表示交易完结（不可退款），但属于已支付
 	case alipay.TradeStatusClosed:
-		return manager.TradeStatusClosed
+		return paymgr.TradeStatusClosed
 	default:
-		return manager.TradeStatusError
+		return paymgr.TradeStatusError
 	}
 }
 
@@ -430,7 +430,7 @@ func wrapAlipayError(err error) error {
 	if err == nil {
 		return nil
 	}
-	return manager.NewChannelError(manager.ChannelAlipay, "SDK_ERROR", err.Error(), err)
+	return paymgr.NewChannelError(paymgr.ChannelAlipay, "SDK_ERROR", err.Error(), err)
 }
 
 // centToYuan 分转元，返回两位小数字符串.

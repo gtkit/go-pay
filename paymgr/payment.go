@@ -5,7 +5,7 @@
 //   - 支付宝使用 smartwalle/alipay/v3
 //   - 业务层通过 Provider 接口调用，无需感知底层 SDK 差异
 //   - 所有金额使用 int64 分为单位，避免浮点精度问题
-package manager
+package paymgr
 
 import (
 	"context"

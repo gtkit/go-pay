@@ -12,7 +12,7 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/gtkit/go-pay/manager"
+	"github.com/gtkit/go-pay/paymgr"
 
 	"time"
 
@@ -138,17 +138,17 @@ func NewProvider(ctx context.Context, cfg *Config) (*Provider, error) {
 	return p, nil
 }
 
-// Channel 实现 manager.Provider 接口.
-func (p *Provider) Channel() manager.Channel {
-	return manager.ChannelWechat
+// Channel 实现 paymgr.Provider 接口.
+func (p *Provider) Channel() paymgr.Channel {
+	return paymgr.ChannelWechat
 }
 
 // UnifiedOrder 统一下单
 //
 // 主要支持 APP 支付，同时保留 Native 扫码支付能力。
-func (p *Provider) UnifiedOrder(ctx context.Context, req *manager.UnifiedOrderRequest) (*manager.UnifiedOrderResponse, error) {
-	resp := &manager.UnifiedOrderResponse{
-		Channel: manager.ChannelWechat,
+func (p *Provider) UnifiedOrder(ctx context.Context, req *paymgr.UnifiedOrderRequest) (*paymgr.UnifiedOrderResponse, error) {
+	resp := &paymgr.UnifiedOrderResponse{
+		Channel: paymgr.ChannelWechat,
 	}
 
 	// 过期时间
@@ -165,7 +165,7 @@ func (p *Provider) UnifiedOrder(ctx context.Context, req *manager.UnifiedOrderRe
 	}
 
 	switch req.TradeType {
-	case manager.TradeTypeApp:
+	case paymgr.TradeTypeApp:
 		svc := app.AppApiService{Client: p.client}
 
 		result, _, err := svc.Prepay(ctx, app.PrepayRequest{
@@ -193,7 +193,7 @@ func (p *Provider) UnifiedOrder(ctx context.Context, req *manager.UnifiedOrderRe
 		}
 		resp.AppParams = appParams
 
-	case manager.TradeTypeNative:
+	case paymgr.TradeTypeNative:
 		svc := native.NativeApiService{Client: p.client}
 		result, _, err := svc.Prepay(ctx, native.PrepayRequest{
 			Appid:       core.String(p.cfg.AppID),
@@ -215,7 +215,7 @@ func (p *Provider) UnifiedOrder(ctx context.Context, req *manager.UnifiedOrderRe
 
 	default:
 		return nil, fmt.Errorf("%w: wechat provider supports app and native, got %s",
-			manager.ErrUnsupportedType, req.TradeType)
+			paymgr.ErrUnsupportedType, req.TradeType)
 	}
 
 	return resp, nil
@@ -225,7 +225,7 @@ func (p *Provider) UnifiedOrder(ctx context.Context, req *manager.UnifiedOrderRe
 //
 // 使用 app.AppApiService 查询，返回通用 pays.Transaction。
 // 微信支付的查询 API 与支付方式无关，底层调用相同的 endpoint。
-func (p *Provider) QueryOrder(ctx context.Context, req *manager.QueryOrderRequest) (*manager.QueryOrderResponse, error) {
+func (p *Provider) QueryOrder(ctx context.Context, req *paymgr.QueryOrderRequest) (*paymgr.QueryOrderResponse, error) {
 	svc := app.AppApiService{Client: p.client}
 
 	var (
@@ -248,8 +248,8 @@ func (p *Provider) QueryOrder(ctx context.Context, req *manager.QueryOrderReques
 		return nil, wrapWechatError(err)
 	}
 
-	resp := &manager.QueryOrderResponse{
-		Channel:       manager.ChannelWechat,
+	resp := &paymgr.QueryOrderResponse{
+		Channel:       paymgr.ChannelWechat,
 		OutTradeNo:    derefString(result.OutTradeNo),
 		TransactionID: derefString(result.TransactionId),
 		TradeStatus:   mapWechatTradeState(derefString(result.TradeState)),
@@ -272,7 +272,7 @@ func (p *Provider) QueryOrder(ctx context.Context, req *manager.QueryOrderReques
 }
 
 // CloseOrder 关闭订单
-func (p *Provider) CloseOrder(ctx context.Context, req *manager.CloseOrderRequest) error {
+func (p *Provider) CloseOrder(ctx context.Context, req *paymgr.CloseOrderRequest) error {
 	svc := app.AppApiService{Client: p.client}
 	_, err := svc.CloseOrder(ctx, app.CloseOrderRequest{
 		Mchid:      core.String(p.cfg.MchID),
@@ -288,7 +288,7 @@ func (p *Provider) CloseOrder(ctx context.Context, req *manager.CloseOrderReques
 // Refund 申请退款
 //
 // 退款接口与支付方式无关，使用 refunddomestic 包。
-func (p *Provider) Refund(ctx context.Context, req *manager.RefundRequest) (*manager.RefundResponse, error) {
+func (p *Provider) Refund(ctx context.Context, req *paymgr.RefundRequest) (*paymgr.RefundResponse, error) {
 	svc := refunddomestic.RefundsApiService{Client: p.client}
 
 	createReq := refunddomestic.CreateRequest{
@@ -313,8 +313,8 @@ func (p *Provider) Refund(ctx context.Context, req *manager.RefundRequest) (*man
 		return nil, wrapWechatError(err)
 	}
 
-	return &manager.RefundResponse{
-		Channel:      manager.ChannelWechat,
+	return &paymgr.RefundResponse{
+		Channel:      paymgr.ChannelWechat,
 		OutRefundNo:  derefString(result.OutRefundNo),
 		RefundID:     derefString(result.RefundId),
 		RefundAmount: derefInt64(result.Amount.Refund),
@@ -325,7 +325,7 @@ func (p *Provider) Refund(ctx context.Context, req *manager.RefundRequest) (*man
 //
 // 回调通知的 Transaction 结构与支付方式无关（APP/JSAPI/Native 共用同一格式），
 // 使用 pays.Transaction 通用结构体。
-func (p *Provider) ParseNotify(ctx context.Context, r *http.Request) (*manager.NotifyResult, error) {
+func (p *Provider) ParseNotify(ctx context.Context, r *http.Request) (*paymgr.NotifyResult, error) {
 	if p.notifyHandler == nil {
 		return nil, fmt.Errorf("wechat: notify handler not initialized, " +
 			"please configure it in NewProvider (see comments for setup instructions)")
@@ -335,11 +335,11 @@ func (p *Provider) ParseNotify(ctx context.Context, r *http.Request) (*manager.N
 	var transaction payments.Transaction
 	_, err := p.notifyHandler.ParseNotifyRequest(ctx, r, &transaction)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", manager.ErrInvalidNotify, err)
+		return nil, fmt.Errorf("%w: %v", paymgr.ErrInvalidNotify, err)
 	}
 
-	result := &manager.NotifyResult{
-		Channel:       manager.ChannelWechat,
+	result := &paymgr.NotifyResult{
+		Channel:       paymgr.ChannelWechat,
 		OutTradeNo:    derefString(transaction.OutTradeNo),
 		TransactionID: derefString(transaction.TransactionId),
 		TradeStatus:   mapWechatTradeState(derefString(transaction.TradeState)),
@@ -440,18 +440,18 @@ func generateNonceStr() string {
 }
 
 // mapWechatTradeState 微信交易状态映射到统一状态
-func mapWechatTradeState(state string) manager.TradeStatus {
+func mapWechatTradeState(state string) paymgr.TradeStatus {
 	switch state {
 	case "SUCCESS":
-		return manager.TradeStatusPaid
+		return paymgr.TradeStatusPaid
 	case "NOTPAY", "USERPAYING":
-		return manager.TradeStatusPending
+		return paymgr.TradeStatusPending
 	case "CLOSED", "REVOKED", "PAYERROR":
-		return manager.TradeStatusClosed
+		return paymgr.TradeStatusClosed
 	case "REFUND":
-		return manager.TradeStatusRefunded
+		return paymgr.TradeStatusRefunded
 	default:
-		return manager.TradeStatusError
+		return paymgr.TradeStatusError
 	}
 }
 
@@ -462,14 +462,14 @@ func wrapWechatError(err error) error {
 	}
 	// 尝试判断是否为 API 错误
 	if core.IsAPIError(err, "") {
-		return manager.NewChannelError(
-			manager.ChannelWechat,
+		return paymgr.NewChannelError(
+			paymgr.ChannelWechat,
 			"API_ERROR",
 			err.Error(),
 			err,
 		)
 	}
-	return manager.NewChannelError(manager.ChannelWechat, "UNKNOWN", err.Error(), err)
+	return paymgr.NewChannelError(paymgr.ChannelWechat, "UNKNOWN", err.Error(), err)
 }
 
 // 指针解引用辅助函数，避免 nil panic
