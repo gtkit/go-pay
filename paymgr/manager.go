@@ -41,6 +41,22 @@ func (m *Manager) Register(p Provider) {
 	m.providers[p.Channel()] = p
 }
 
+// Deregister 注销支付渠道提供者
+//
+// 注销后该渠道的所有操作（下单/查询/退款/回调）都会返回错误。
+// 适用场景: 运行时临时下线某个渠道、切换前先清理旧实例。
+//
+// 返回 true 表示确实删除了，false 表示该渠道本来就不存在。
+func (m *Manager) Deregister(ch Channel) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	_, ok := m.providers[ch]
+	if ok {
+		delete(m.providers, ch)
+	}
+	return ok
+}
+
 // Provider 获取指定渠道的提供者.
 func (m *Manager) Provider(ch Channel) (Provider, error) {
 	m.mu.RLock()
@@ -50,6 +66,17 @@ func (m *Manager) Provider(ch Channel) (Provider, error) {
 		return nil, fmt.Errorf("payment: channel %q not registered", ch)
 	}
 	return p, nil
+}
+
+// Channels 返回当前已注册的所有渠道（监控/健康检查用）
+func (m *Manager) Channels() []Channel {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	channels := make([]Channel, 0, len(m.providers))
+	for ch := range m.providers {
+		channels = append(channels, ch)
+	}
+	return channels
 }
 
 // UnifiedOrder 统一下单.
