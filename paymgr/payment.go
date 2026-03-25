@@ -61,17 +61,20 @@ type UnifiedOrderRequest struct {
 
 // Validate 校验请求参数.
 func (r *UnifiedOrderRequest) Validate() error {
+	if r == nil {
+		return fmt.Errorf("%w: unified order request is required", ErrInvalidParam)
+	}
 	if r.OutTradeNo == "" {
-		return fmt.Errorf("payment: out_trade_no is required")
+		return fmt.Errorf("%w: out_trade_no is required", ErrInvalidParam)
 	}
 	if r.TotalAmount <= 0 {
-		return fmt.Errorf("payment: total_amount must be positive, got %d", r.TotalAmount)
+		return fmt.Errorf("%w: total_amount must be positive, got %d", ErrInvalidParam, r.TotalAmount)
 	}
 	if r.Subject == "" {
-		return fmt.Errorf("payment: subject is required")
+		return fmt.Errorf("%w: subject is required", ErrInvalidParam)
 	}
 	if r.NotifyURL == "" {
-		return fmt.Errorf("payment: notify_url is required")
+		return fmt.Errorf("%w: notify_url is required", ErrInvalidParam)
 	}
 	return nil
 }
@@ -96,8 +99,11 @@ type QueryOrderRequest struct {
 
 // Validate 校验查询请求.
 func (r *QueryOrderRequest) Validate() error {
+	if r == nil {
+		return fmt.Errorf("%w: query order request is required", ErrInvalidParam)
+	}
 	if r.OutTradeNo == "" && r.TransactionID == "" {
-		return fmt.Errorf("payment: out_trade_no or transaction_id is required")
+		return fmt.Errorf("%w: out_trade_no or transaction_id is required", ErrInvalidParam)
 	}
 	return nil
 }
@@ -131,20 +137,23 @@ type RefundRequest struct {
 
 // Validate 校验退款请求.
 func (r *RefundRequest) Validate() error {
+	if r == nil {
+		return fmt.Errorf("%w: refund request is required", ErrInvalidParam)
+	}
 	if r.OutTradeNo == "" && r.TransactionID == "" {
-		return fmt.Errorf("payment: out_trade_no or transaction_id is required for refund")
+		return fmt.Errorf("%w: out_trade_no or transaction_id is required for refund", ErrInvalidParam)
 	}
 	if r.OutRefundNo == "" {
-		return fmt.Errorf("payment: out_refund_no is required")
+		return fmt.Errorf("%w: out_refund_no is required", ErrInvalidParam)
 	}
 	if r.RefundAmount <= 0 {
-		return fmt.Errorf("payment: refund_amount must be positive, got %d", r.RefundAmount)
+		return fmt.Errorf("%w: refund_amount must be positive, got %d", ErrInvalidParam, r.RefundAmount)
 	}
 	if r.TotalAmount <= 0 {
-		return fmt.Errorf("payment: total_amount must be positive for refund")
+		return fmt.Errorf("%w: total_amount must be positive for refund", ErrInvalidParam)
 	}
 	if r.RefundAmount > r.TotalAmount {
-		return fmt.Errorf("payment: refund_amount(%d) cannot exceed total_amount(%d)", r.RefundAmount, r.TotalAmount)
+		return fmt.Errorf("%w: refund_amount(%d) cannot exceed total_amount(%d)", ErrInvalidParam, r.RefundAmount, r.TotalAmount)
 	}
 	return nil
 }

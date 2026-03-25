@@ -4,6 +4,9 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"net/url"
+	"os"
+	"strings"
 
 	"strconv"
 	"time"
@@ -14,17 +17,44 @@ import (
 
 // Config 支付宝配置.
 type Config struct {
-	AppID        string // 支付宝应用 ID
-	PrivateKey   string // 应用私钥（PKCS1 格式，去除头尾和换行）
-	IsProduction bool   // true=生产环境, false=沙箱环境
+	AppID          string // 支付宝应用 ID
+	PrivateKey     string // 应用私钥内容
+	PrivateKeyPath string // 应用私钥路径
+	IsProduction   bool   // true=生产环境, false=沙箱环境
 
 	// 证书模式（推荐）—— 以下三项全部填写则启用证书模式
+	AppCertPublicKey        string // 应用公钥证书内容
 	AppCertPublicKeyPath    string // 应用公钥证书路径
+	AlipayRootCert          string // 支付宝根证书内容
 	AlipayRootCertPath      string // 支付宝根证书路径
+	AlipayCertPublicKey     string // 支付宝公钥证书内容
 	AlipayCertPublicKeyPath string // 支付宝公钥证书路径
 
 	// 普通公钥模式 —— 仅当证书路径全部为空时使用
 	AlipayPublicKey string // 支付宝公钥
+}
+
+// Option 用于函数选项模式配置支付宝 Provider。
+//
+// *Config 也实现了该接口，因此旧的结构体配置调用方式仍可继续使用：
+//
+//	alipay.NewProvider(&alipay.Config{...})
+type Option interface {
+	apply(*Config) error
+}
+
+type optionFunc func(*Config) error
+
+func (f optionFunc) apply(cfg *Config) error {
+	return f(cfg)
+}
+
+func (c *Config) apply(dst *Config) error {
+	if c == nil {
+		return fmt.Errorf("alipay: config is required")
+	}
+	*dst = *c
+	return nil
 }
 
 // Validate 校验配置完整性.
@@ -32,14 +62,14 @@ func (c *Config) Validate() error {
 	if c.AppID == "" {
 		return fmt.Errorf("alipay: app_id is required")
 	}
-	if c.PrivateKey == "" {
-		return fmt.Errorf("alipay: private_key is required")
+	if c.PrivateKey == "" && c.PrivateKeyPath == "" {
+		return fmt.Errorf("alipay: private_key or private_key_path is required")
 	}
 	// 证书模式三项必须全部提供或全部为空
-	hasCert := c.AppCertPublicKeyPath != "" || c.AlipayRootCertPath != "" || c.AlipayCertPublicKeyPath != ""
-	allCert := c.AppCertPublicKeyPath != "" && c.AlipayRootCertPath != "" && c.AlipayCertPublicKeyPath != ""
+	hasCert := c.hasAppCert() || c.hasRootCert() || c.hasAlipayCert()
+	allCert := c.hasAppCert() && c.hasRootCert() && c.hasAlipayCert()
 	if hasCert && !allCert {
-		return fmt.Errorf("alipay: cert mode requires all three cert paths (app_cert, root_cert, alipay_cert)")
+		return fmt.Errorf("alipay: cert mode requires app cert, root cert and alipay cert")
 	}
 	if !hasCert && c.AlipayPublicKey == "" {
 		return fmt.Errorf("alipay: either cert paths or alipay_public_key is required")
@@ -49,7 +79,7 @@ func (c *Config) Validate() error {
 
 // UseCertMode 是否使用证书模式.
 func (c *Config) UseCertMode() bool {
-	return c.AppCertPublicKeyPath != "" && c.AlipayRootCertPath != "" && c.AlipayCertPublicKeyPath != ""
+	return c.hasAppCert() && c.hasRootCert() && c.hasAlipayCert()
 }
 
 // Provider 支付宝支付提供者.
@@ -58,13 +88,95 @@ type Provider struct {
 	client *alipay.Client
 }
 
+// WithAppID 设置支付宝应用 ID。
+func WithAppID(appID string) Option {
+	return optionFunc(func(cfg *Config) error {
+		cfg.AppID = appID
+		return nil
+	})
+}
+
+// WithProduction 设置运行环境。
+func WithProduction(isProduction bool) Option {
+	return optionFunc(func(cfg *Config) error {
+		cfg.IsProduction = isProduction
+		return nil
+	})
+}
+
+// WithPrivateKey 设置应用私钥内容。
+func WithPrivateKey(privateKey string) Option {
+	return optionFunc(func(cfg *Config) error {
+		cfg.PrivateKey = privateKey
+		return nil
+	})
+}
+
+// WithPrivateKeyPath 通过文件路径设置应用私钥。
+func WithPrivateKeyPath(path string) Option {
+	return optionFunc(func(cfg *Config) error {
+		cfg.PrivateKeyPath = path
+		return nil
+	})
+}
+
+// WithCertMode 使用证书模式配置支付宝。
+func WithCertMode(appCert, rootCert, alipayCert string) Option {
+	return optionFunc(func(cfg *Config) error {
+		cfg.AppCertPublicKey = appCert
+		cfg.AlipayRootCert = rootCert
+		cfg.AlipayCertPublicKey = alipayCert
+		return nil
+	})
+}
+
+// WithCertModePaths 使用证书文件路径配置支付宝。
+func WithCertModePaths(appCertPath, rootCertPath, alipayCertPath string) Option {
+	return optionFunc(func(cfg *Config) error {
+		cfg.AppCertPublicKeyPath = appCertPath
+		cfg.AlipayRootCertPath = rootCertPath
+		cfg.AlipayCertPublicKeyPath = alipayCertPath
+		return nil
+	})
+}
+
+// WithAlipayPublicKey 使用普通公钥模式配置支付宝。
+func WithAlipayPublicKey(publicKey string) Option {
+	return optionFunc(func(cfg *Config) error {
+		cfg.AlipayPublicKey = publicKey
+		return nil
+	})
+}
+
 // NewProvider 创建支付宝支付提供者.
-func NewProvider(cfg *Config) (*Provider, error) {
+func NewProvider(opts ...Option) (*Provider, error) {
+	cfg := &Config{}
+	for _, opt := range opts {
+		if opt == nil {
+			continue
+		}
+		if err := opt.apply(cfg); err != nil {
+			return nil, err
+		}
+	}
+	return NewProviderWithConfig(cfg)
+}
+
+// NewProviderWithConfig 使用结构体配置创建支付宝支付提供者。
+func NewProviderWithConfig(cfg *Config) (*Provider, error) {
+	if cfg == nil {
+		return nil, fmt.Errorf("alipay: config is required")
+	}
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
 
-	client, err := alipay.New(cfg.AppID, cfg.PrivateKey, cfg.IsProduction)
+	privateKey, err := resolvePrivateKey(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("alipay: load private key: %w", err)
+	}
+
+	client, err := alipay.New(cfg.AppID, privateKey, cfg.IsProduction)
 	if err != nil {
 		return nil, fmt.Errorf("alipay: init client: %w", err)
 	}
@@ -72,13 +184,25 @@ func NewProvider(cfg *Config) (*Provider, error) {
 	// 根据配置选择签名验签方式
 	if cfg.UseCertMode() {
 		// 证书模式（推荐，安全性更高，支持证书自动续期）
-		if err := client.LoadAppCertPublicKeyFromFile(cfg.AppCertPublicKeyPath); err != nil {
+		appCert, err := resolveSource(cfg.AppCertPublicKey, cfg.AppCertPublicKeyPath)
+		if err != nil {
 			return nil, fmt.Errorf("alipay: load app cert: %w", err)
 		}
-		if err := client.LoadAliPayRootCertFromFile(cfg.AlipayRootCertPath); err != nil {
+		if err := client.LoadAppCertPublicKey(appCert); err != nil {
+			return nil, fmt.Errorf("alipay: load app cert: %w", err)
+		}
+		rootCert, err := resolveSource(cfg.AlipayRootCert, cfg.AlipayRootCertPath)
+		if err != nil {
 			return nil, fmt.Errorf("alipay: load root cert: %w", err)
 		}
-		if err := client.LoadAlipayCertPublicKeyFromFile(cfg.AlipayCertPublicKeyPath); err != nil {
+		if err := client.LoadAliPayRootCert(rootCert); err != nil {
+			return nil, fmt.Errorf("alipay: load root cert: %w", err)
+		}
+		alipayCert, err := resolveSource(cfg.AlipayCertPublicKey, cfg.AlipayCertPublicKeyPath)
+		if err != nil {
+			return nil, fmt.Errorf("alipay: load alipay cert: %w", err)
+		}
+		if err := client.LoadAlipayCertPublicKey(alipayCert); err != nil {
 			return nil, fmt.Errorf("alipay: load alipay cert: %w", err)
 		}
 	} else {
@@ -118,16 +242,7 @@ func (p *Provider) UnifiedOrder(ctx context.Context, req *paymgr.UnifiedOrderReq
 	}
 
 	// 附加数据
-	var passbackParams string
-	if len(req.Metadata) > 0 {
-		// 支付宝 passback_params 为 URL encode 字符串，此处简化为 key=value
-		for k, v := range req.Metadata {
-			if passbackParams != "" {
-				passbackParams += "&"
-			}
-			passbackParams += k + "=" + v
-		}
-	}
+	passbackParams := encodePassbackParams(req.Metadata)
 
 	switch req.TradeType {
 	case paymgr.TradeTypeNative:
@@ -384,14 +499,7 @@ func (p *Provider) ParseNotify(ctx context.Context, r *http.Request) (*paymgr.No
 
 	// 附加数据
 	if noti.PassbackParams != "" {
-		metadata := make(map[string]string)
-		// 简单解析 key=value&key2=value2 格式
-		for _, pair := range splitParams(noti.PassbackParams) {
-			k, v := splitKV(pair)
-			if k != "" {
-				metadata[k] = v
-			}
-		}
+		metadata := decodePassbackParams(noti.PassbackParams)
 		if len(metadata) > 0 {
 			result.Metadata = metadata
 		}
@@ -435,44 +543,157 @@ func wrapAlipayError(err error) error {
 
 // centToYuan 分转元，返回两位小数字符串.
 func centToYuan(cent int64) string {
-	yuan := float64(cent) / 100.0
-	return strconv.FormatFloat(yuan, 'f', 2, 64)
+	sign := ""
+	var abs uint64
+	if cent < 0 {
+		sign = "-"
+		abs = uint64(-(cent + 1))
+		abs++
+	} else {
+		abs = uint64(cent)
+	}
+	return fmt.Sprintf("%s%d.%02d", sign, abs/100, abs%100)
 }
 
 // yuanToCent 元转分.
 func yuanToCent(yuan string) int64 {
-	f, err := strconv.ParseFloat(yuan, 64)
-	if err != nil {
+	const maxInt64 = int64(^uint64(0) >> 1)
+
+	s := strings.TrimSpace(yuan)
+	if s == "" {
 		return 0
 	}
-	// 乘 100 后四舍五入，避免浮点精度问题
-	return int64(f*100 + 0.5)
+
+	negative := false
+	switch s[0] {
+	case '-':
+		negative = true
+		s = s[1:]
+	case '+':
+		s = s[1:]
+	}
+	if s == "" {
+		return 0
+	}
+
+	parts := strings.SplitN(s, ".", 3)
+	if len(parts) > 2 {
+		return 0
+	}
+
+	wholePart := parts[0]
+	if wholePart == "" {
+		wholePart = "0"
+	}
+
+	fractionPart := "00"
+	if len(parts) == 2 {
+		fractionPart = parts[1]
+		switch {
+		case len(fractionPart) == 0:
+			fractionPart = "00"
+		case len(fractionPart) == 1:
+			fractionPart += "0"
+		case len(fractionPart) >= 2:
+			fractionPart = fractionPart[:2]
+		}
+	}
+
+	whole, err := strconv.ParseInt(wholePart, 10, 64)
+	if err != nil || whole < 0 {
+		return 0
+	}
+	fraction, err := strconv.ParseInt(fractionPart, 10, 64)
+	if err != nil || fraction < 0 {
+		return 0
+	}
+
+	if whole > (maxInt64-fraction)/100 {
+		return 0
+	}
+
+	total := whole*100 + fraction
+	if negative {
+		return -total
+	}
+	return total
 }
 
-// splitParams 按 & 分割参数.
-func splitParams(s string) []string {
-	var result []string
-	start := 0
-	for i := range len(s) {
-		if s[i] == '&' {
-			if i > start {
-				result = append(result, s[start:i])
+func encodePassbackParams(metadata map[string]string) string {
+	if len(metadata) == 0 {
+		return ""
+	}
+
+	values := make(url.Values, len(metadata))
+	for k, v := range metadata {
+		values.Set(k, v)
+	}
+	return values.Encode()
+}
+
+func decodePassbackParams(raw string) map[string]string {
+	if raw == "" {
+		return nil
+	}
+
+	// 优先按标准 query string 解析
+	if values, err := url.ParseQuery(raw); err == nil && len(values) > 0 {
+		// 验证解析结果合理（至少有一个非空 key）
+		result := make(map[string]string, len(values))
+		for k, v := range values {
+			if len(v) == 0 {
+				result[k] = ""
+				continue
 			}
-			start = i + 1
+			result[k] = v[0]
+		}
+		return result
+	}
+
+	// 兜底：尝试先 unescape 再解析（兼容旧版双重编码）
+	if decoded, err := url.QueryUnescape(raw); err == nil {
+		if values, err := url.ParseQuery(decoded); err == nil && len(values) > 0 {
+			result := make(map[string]string, len(values))
+			for k, v := range values {
+				if len(v) == 0 {
+					result[k] = ""
+					continue
+				}
+				result[k] = v[0]
+			}
+			return result
 		}
 	}
-	if start < len(s) {
-		result = append(result, s[start:])
-	}
-	return result
+
+	return nil
 }
 
-// splitKV 按第一个 = 分割键值对.
-func splitKV(s string) (string, string) {
-	for i := range len(s) {
-		if s[i] == '=' {
-			return s[:i], s[i+1:]
-		}
+func (c *Config) hasAppCert() bool {
+	return c.AppCertPublicKey != "" || c.AppCertPublicKeyPath != ""
+}
+
+func (c *Config) hasRootCert() bool {
+	return c.AlipayRootCert != "" || c.AlipayRootCertPath != ""
+}
+
+func (c *Config) hasAlipayCert() bool {
+	return c.AlipayCertPublicKey != "" || c.AlipayCertPublicKeyPath != ""
+}
+
+func resolvePrivateKey(cfg *Config) (string, error) {
+	return resolveSource(cfg.PrivateKey, cfg.PrivateKeyPath)
+}
+
+func resolveSource(value, path string) (string, error) {
+	if value != "" {
+		return value, nil
 	}
-	return s, ""
+	if path == "" {
+		return "", fmt.Errorf("missing source value")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
 }

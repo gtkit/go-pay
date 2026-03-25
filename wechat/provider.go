@@ -9,6 +9,7 @@ import (
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 
@@ -29,12 +30,39 @@ import (
 
 // Config 微信支付配置
 type Config struct {
-	AppID               string          // 开放平台应用的 appid（微信开放平台注册的移动应用）
-	MchID               string          // 商户号
-	MchCertSerialNumber string          // 商户证书序列号
-	MchAPIv3Key         string          // 商户 APIv3 密钥（用于回调解密）
-	MchPrivateKeyPath   string          // 商户私钥文件路径（PEM 格式）
-	MchPrivateKey       *rsa.PrivateKey // 商户私钥（直接提供则忽略 Path）
+	AppID                    string            // 开放平台应用的 appid（微信开放平台注册的移动应用）
+	MchID                    string            // 商户号
+	MchCertSerialNumber      string            // 商户证书序列号
+	MchAPIv3Key              string            // 商户 APIv3 密钥（用于回调解密）
+	MchPrivateKeyPath        string            // 商户私钥文件路径（PEM 格式）
+	MchPrivateKeyPEM         string            // 商户私钥 PEM 文本
+	MchPrivateKey            *rsa.PrivateKey   // 商户私钥（直接提供则优先）
+	WechatPayCertificatePath string            // 微信支付平台证书路径
+	WechatPayCertificatePEM  string            // 微信支付平台证书 PEM 文本
+	WechatPayCertificate     *x509.Certificate // 微信支付平台证书（直接提供则优先）
+}
+
+// Option 用于函数选项模式配置微信 Provider。
+//
+// *Config 也实现了该接口，因此旧的结构体配置调用方式仍可继续使用：
+//
+//	wechat.NewProvider(ctx, &wechat.Config{...})
+type Option interface {
+	apply(*Config) error
+}
+
+type optionFunc func(*Config) error
+
+func (f optionFunc) apply(cfg *Config) error {
+	return f(cfg)
+}
+
+func (c *Config) apply(dst *Config) error {
+	if c == nil {
+		return fmt.Errorf("wechat: config is required")
+	}
+	*dst = *c
+	return nil
 }
 
 // Provider 微信支付提供者（以 APP 支付为主）.
@@ -59,28 +87,110 @@ func (c *Config) Validate() error {
 	if c.MchAPIv3Key == "" {
 		return fmt.Errorf("wechat: mch_apiv3_key is required")
 	}
-	if c.MchPrivateKey == nil && c.MchPrivateKeyPath == "" {
-		return fmt.Errorf("wechat: mch_private_key or mch_private_key_path is required")
+	if c.MchPrivateKey == nil && c.MchPrivateKeyPEM == "" && c.MchPrivateKeyPath == "" {
+		return fmt.Errorf("wechat: mch_private_key, mch_private_key_pem or mch_private_key_path is required")
+	}
+	if c.WechatPayCertificate == nil && c.WechatPayCertificatePEM == "" && c.WechatPayCertificatePath == "" {
+		return fmt.Errorf("wechat: wechatpay_certificate, wechatpay_certificate_pem or wechatpay_certificate_path is required")
 	}
 	return nil
+}
+
+// WithAppID 设置微信应用 AppID。
+func WithAppID(appID string) Option {
+	return optionFunc(func(cfg *Config) error {
+		cfg.AppID = appID
+		return nil
+	})
+}
+
+// WithMerchant 设置微信商户信息。
+func WithMerchant(mchID, certSerialNumber, apiV3Key string) Option {
+	return optionFunc(func(cfg *Config) error {
+		cfg.MchID = mchID
+		cfg.MchCertSerialNumber = certSerialNumber
+		cfg.MchAPIv3Key = apiV3Key
+		return nil
+	})
+}
+
+// WithMerchantPrivateKeyPath 通过文件路径设置商户私钥。
+func WithMerchantPrivateKeyPath(path string) Option {
+	return optionFunc(func(cfg *Config) error {
+		cfg.MchPrivateKeyPath = path
+		return nil
+	})
+}
+
+// WithMerchantPrivateKeyPEM 通过 PEM 文本设置商户私钥。
+func WithMerchantPrivateKeyPEM(privateKeyPEM string) Option {
+	return optionFunc(func(cfg *Config) error {
+		cfg.MchPrivateKeyPEM = privateKeyPEM
+		return nil
+	})
+}
+
+// WithMerchantPrivateKey 直接设置已解析的商户私钥。
+func WithMerchantPrivateKey(privateKey *rsa.PrivateKey) Option {
+	return optionFunc(func(cfg *Config) error {
+		cfg.MchPrivateKey = privateKey
+		return nil
+	})
+}
+
+// WithPlatformCertificatePath 通过文件路径设置微信支付平台证书。
+func WithPlatformCertificatePath(path string) Option {
+	return optionFunc(func(cfg *Config) error {
+		cfg.WechatPayCertificatePath = path
+		return nil
+	})
+}
+
+// WithPlatformCertificatePEM 通过 PEM 文本设置微信支付平台证书。
+func WithPlatformCertificatePEM(certificatePEM string) Option {
+	return optionFunc(func(cfg *Config) error {
+		cfg.WechatPayCertificatePEM = certificatePEM
+		return nil
+	})
+}
+
+// WithPlatformCertificate 直接设置已解析的平台证书。
+func WithPlatformCertificate(certificate *x509.Certificate) Option {
+	return optionFunc(func(cfg *Config) error {
+		cfg.WechatPayCertificate = certificate
+		return nil
+	})
 }
 
 // NewProvider 创建微信支付提供者.
 //
 // 初始化时会自动注册平台证书下载器，后续自动轮转平台证书。
-func NewProvider(ctx context.Context, cfg *Config) (*Provider, error) {
+func NewProvider(ctx context.Context, opts ...Option) (*Provider, error) {
+	cfg := &Config{}
+	for _, opt := range opts {
+		if opt == nil {
+			continue
+		}
+		if err := opt.apply(cfg); err != nil {
+			return nil, err
+		}
+	}
+	return NewProviderWithConfig(ctx, cfg)
+}
+
+// NewProviderWithConfig 使用结构体配置创建微信支付提供者。
+func NewProviderWithConfig(ctx context.Context, cfg *Config) (*Provider, error) {
+	if cfg == nil {
+		return nil, fmt.Errorf("wechat: config is required")
+	}
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
 
 	// 加载商户私钥
-	privateKey := cfg.MchPrivateKey
-	if privateKey == nil {
-		var err error
-		privateKey, err = utils.LoadPrivateKeyWithPath(cfg.MchPrivateKeyPath)
-		if err != nil {
-			return nil, fmt.Errorf("wechat: load private key: %w", err)
-		}
+	privateKey, err := resolvePrivateKey(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("wechat: load private key: %w", err)
 	}
 
 	// 初始化 client
@@ -113,7 +223,7 @@ func NewProvider(ctx context.Context, cfg *Config) (*Provider, error) {
 	//
 	// 方式1：使用本地管理的微信支付平台证书
 	//
-	wechatPayCert, err := utils.LoadCertificateWithPath("/path/to/wechatpay_cert.pem")
+	wechatPayCert, err := resolvePlatformCertificate(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("wechat: load platform cert: %w", err)
 	}
@@ -160,8 +270,11 @@ func (p *Provider) UnifiedOrder(ctx context.Context, req *paymgr.UnifiedOrderReq
 	// 附加数据（JSON 序列化后存入 attach 字段，回调时原样返回）
 	var attach *string
 	if len(req.Metadata) > 0 {
-		data, _ := json.Marshal(req.Metadata)
-		attach = new(string(data))
+		data, err := json.Marshal(req.Metadata)
+		if err != nil {
+			return nil, fmt.Errorf("wechat: marshal metadata: %w", err)
+		}
+		attach = core.String(string(data))
 	}
 
 	switch req.TradeType {
@@ -399,7 +512,10 @@ func (p *Provider) ACKNotify(w http.ResponseWriter) {
 // 参考文档: https://pay.weixin.qq.com/doc/v3/merchant/4012791455
 func (p *Provider) buildAppPayParams(prepayID string) (string, error) {
 	timestamp := fmt.Sprintf("%d", time.Now().Unix())
-	nonceStr := generateNonceStr()
+	nonceStr, err := generateNonceStr()
+	if err != nil {
+		return "", fmt.Errorf("generate nonce: %w", err)
+	}
 
 	// 构造待签名字符串
 	message := p.cfg.AppID + "\n" + timestamp + "\n" + nonceStr + "\n" + prepayID + "\n"
@@ -433,10 +549,12 @@ func (p *Provider) buildAppPayParams(prepayID string) (string, error) {
 // --- 内部辅助函数 ---
 
 // generateNonceStr 生成 32 位随机字符串
-func generateNonceStr() string {
+func generateNonceStr() (string, error) {
 	b := make([]byte, 16)
-	_, _ = rand.Read(b)
-	return fmt.Sprintf("%x", b)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%x", b), nil
 }
 
 // mapWechatTradeState 微信交易状态映射到统一状态
@@ -460,12 +578,19 @@ func wrapWechatError(err error) error {
 	if err == nil {
 		return nil
 	}
-	// 尝试判断是否为 API 错误
-	if core.IsAPIError(err, "") {
+	if apiErr, ok := errors.AsType[*core.APIError](err); ok {
+		code := apiErr.Code
+		if code == "" {
+			code = "API_ERROR"
+		}
+		message := apiErr.Message
+		if message == "" {
+			message = apiErr.Error()
+		}
 		return paymgr.NewChannelError(
 			paymgr.ChannelWechat,
-			"API_ERROR",
-			err.Error(),
+			code,
+			message,
 			err,
 		)
 	}
@@ -489,12 +614,41 @@ func derefInt64(p *int64) int64 {
 
 // 转换时间字符串为 time.Time.
 func parseTime(t string) time.Time {
-	// 定义时间格式（必须与字符串格式匹配）
-	layout := "2006-01-02 15:04:05"
-
-	// 转换为 time.Time
-	if res, err := time.Parse(layout, t); err == nil {
-		return res
+	layouts := []string{
+		time.RFC3339Nano,
+		time.RFC3339,
+		"2006-01-02 15:04:05",
+	}
+	for _, layout := range layouts {
+		if res, err := time.Parse(layout, t); err == nil {
+			return res
+		}
 	}
 	return time.Time{}
+}
+
+func resolvePrivateKey(cfg *Config) (*rsa.PrivateKey, error) {
+	switch {
+	case cfg.MchPrivateKey != nil:
+		return cfg.MchPrivateKey, nil
+	case cfg.MchPrivateKeyPEM != "":
+		return utils.LoadPrivateKey(cfg.MchPrivateKeyPEM)
+	case cfg.MchPrivateKeyPath != "":
+		return utils.LoadPrivateKeyWithPath(cfg.MchPrivateKeyPath)
+	default:
+		return nil, fmt.Errorf("missing merchant private key")
+	}
+}
+
+func resolvePlatformCertificate(cfg *Config) (*x509.Certificate, error) {
+	switch {
+	case cfg.WechatPayCertificate != nil:
+		return cfg.WechatPayCertificate, nil
+	case cfg.WechatPayCertificatePEM != "":
+		return utils.LoadCertificate(cfg.WechatPayCertificatePEM)
+	case cfg.WechatPayCertificatePath != "":
+		return utils.LoadCertificateWithPath(cfg.WechatPayCertificatePath)
+	default:
+		return nil, fmt.Errorf("missing platform certificate")
+	}
 }

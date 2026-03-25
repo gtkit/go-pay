@@ -3,11 +3,15 @@ package paymgr
 import (
 	"context"
 	"fmt"
+	"maps"
 	"net/http"
+	"slices"
 	"sync"
 )
 
-// Manager 支付管理器，统一管理多个支付渠道
+// Manager 支付管理器，统一管理多个支付渠道。
+//
+// Manager 可并发安全使用。运行时允许 Register / Deregister 与读操作并发执行。
 //
 // 使用方式:
 //
@@ -72,11 +76,7 @@ func (m *Manager) Provider(ch Channel) (Provider, error) {
 func (m *Manager) Channels() []Channel {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	channels := make([]Channel, 0, len(m.providers))
-	for ch := range m.providers {
-		channels = append(channels, ch)
-	}
-	return channels
+	return slices.Collect(maps.Keys(m.providers))
 }
 
 // UnifiedOrder 统一下单.
@@ -105,8 +105,11 @@ func (m *Manager) QueryOrder(ctx context.Context, ch Channel, req *QueryOrderReq
 
 // CloseOrder 关闭订单.
 func (m *Manager) CloseOrder(ctx context.Context, ch Channel, req *CloseOrderRequest) error {
+	if req == nil {
+		return fmt.Errorf("%w: close order request is required", ErrInvalidParam)
+	}
 	if req.OutTradeNo == "" {
-		return fmt.Errorf("payment: out_trade_no is required")
+		return fmt.Errorf("%w: out_trade_no is required", ErrInvalidParam)
 	}
 	p, err := m.Provider(ch)
 	if err != nil {

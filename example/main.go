@@ -25,28 +25,33 @@ func initpay() {
 
 	// --- 初始化微信支付（APP 支付） ---
 	// AppID 是在微信开放平台注册的移动应用的 appid，不是公众号/小程序的 appid
-	wechatProvider, err := wechat.NewProvider(ctx, &wechat.Config{
-		AppID:               "wx1234567890abcdef",                       // 开放平台移动应用 appid
-		MchID:               "1900000001",                               // 商户号
-		MchCertSerialNumber: "3775B6A45ACD588826D15E583A95F5DD********", // 商户证书序列号
-		MchAPIv3Key:         "your-apiv3-key-32-characters-long",        // APIv3 密钥
-		MchPrivateKeyPath:   "/path/to/apiclient_key.pem",               // 商户私钥
-	})
+	wechatProvider, err := wechat.NewProvider(
+		ctx,
+		wechat.WithAppID("wx1234567890abcdef"),
+		wechat.WithMerchant(
+			"1900000001",
+			"3775B6A45ACD588826D15E583A95F5DD********",
+			"your-apiv3-key-32-characters-long",
+		),
+		wechat.WithMerchantPrivateKeyPath("/path/to/apiclient_key.pem"),
+		wechat.WithPlatformCertificatePath("/path/to/wechatpay_cert.pem"),
+	)
 	if err != nil {
 		log.Fatalf("init wechat provider: %v", err)
 	}
 	payMgr.Register(wechatProvider)
 
 	// --- 初始化支付宝（证书模式） ---
-	alipayProvider, err := alipay.NewProvider(&alipay.Config{
-		AppID:        "2021000000000001",
-		PrivateKey:   "MIIEvQIBADANBgkqhki...", // 应用私钥
-		IsProduction: true,
-		// 证书模式（推荐）
-		AppCertPublicKeyPath:    "/path/to/appCertPublicKey.crt",
-		AlipayRootCertPath:      "/path/to/alipayRootCert.crt",
-		AlipayCertPublicKeyPath: "/path/to/alipayCertPublicKey_RSA2.crt",
-	})
+	alipayProvider, err := alipay.NewProvider(
+		alipay.WithAppID("2021000000000001"),
+		alipay.WithPrivateKey("MIIEvQIBADANBgkqhki..."),
+		alipay.WithProduction(true),
+		alipay.WithCertModePaths(
+			"/path/to/appCertPublicKey.crt",
+			"/path/to/alipayRootCert.crt",
+			"/path/to/alipayCertPublicKey_RSA2.crt",
+		),
+	)
 	if err != nil {
 		log.Fatalf("init alipay provider: %v", err)
 	}
@@ -80,12 +85,14 @@ func initpay() {
 //	}
 //
 // 返回: 微信返回 app_params（JSON），APP 端解析后传给微信 SDK 调起支付
-//       支付宝返回 app_params（签名字符串），APP 端直接传给支付宝 SDK
+//
+//	支付宝返回 app_params（签名字符串），APP 端直接传给支付宝 SDK
 func handleCreateOrder(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	defer r.Body.Close()
 
 	var req struct {
 		Channel   paymgr.Channel   `json:"channel"`
@@ -235,6 +242,8 @@ func handleNotify(w http.ResponseWriter, r *http.Request, ch paymgr.Channel) {
 //	  "reason": "用户申请退款"
 //	}
 func handleRefund(w http.ResponseWriter, r *http.Request) {
+	defer r.Body.Close()
+
 	var req struct {
 		Channel      paymgr.Channel `json:"channel"`
 		OutTradeNo   string         `json:"out_trade_no"`

@@ -7,6 +7,7 @@ import (
 
 // 哨兵错误，用于 errors.Is 判断
 var (
+	ErrInvalidParam    = errors.New("payment: invalid param")
 	ErrOrderNotFound   = errors.New("payment: order not found")
 	ErrOrderClosed     = errors.New("payment: order already closed")
 	ErrOrderPaid       = errors.New("payment: order already paid")
