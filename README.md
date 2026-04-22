@@ -8,13 +8,18 @@
 - 订单查询
 - 关闭订单
 - 退款
-- 异步通知解析与应答
+- 退款查询（v1.1.0+）
+- 异步通知解析与应答（含退款通知，v1.1.0+）
 
 项目内部通过 `paymgr.Manager` 管理不同支付渠道，业务方只需要：
 
 1. 初始化各渠道 `Provider`
 2. 注册到 `Manager`
 3. 按渠道调用统一方法
+
+> **升级到 v1.1.0 注意**：`paymgr.Provider` 接口新增 `QueryRefund` 和 `ParseRefundNotify` 两个方法。
+> 官方 `alipay` / `wechat` 两个实现已就位，但若你在项目里自定义实现过 `Provider`，升级后会编译失败，需要补齐这两个方法。
+> 详细变更见 [CHANGELOG.md](./CHANGELOG.md)。
 
 ## 1. 安装
 
