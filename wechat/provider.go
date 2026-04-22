@@ -434,6 +434,37 @@ func (p *Provider) Refund(ctx context.Context, req *paymgr.RefundRequest) (*paym
 	}, nil
 }
 
+// QueryRefund 查询退款
+//
+// 通过商户退款单号查询退款状态，调用 refunddomestic.QueryByOutRefundNo。
+func (p *Provider) QueryRefund(ctx context.Context, req *paymgr.QueryRefundRequest) (*paymgr.QueryRefundResponse, error) {
+	svc := refunddomestic.RefundsApiService{Client: p.client}
+
+	result, _, err := svc.QueryByOutRefundNo(ctx, refunddomestic.QueryByOutRefundNoRequest{
+		OutRefundNo: core.String(req.OutRefundNo),
+	})
+	if err != nil {
+		return nil, wrapWechatError(err)
+	}
+
+	resp := &paymgr.QueryRefundResponse{
+		Channel:       paymgr.ChannelWechat,
+		OutRefundNo:   derefString(result.OutRefundNo),
+		OutTradeNo:    derefString(result.OutTradeNo),
+		TransactionID: derefString(result.TransactionId),
+		RefundID:      derefString(result.RefundId),
+		RefundStatus:  mapWechatRefundStatus(result.Status),
+	}
+	if result.Amount != nil {
+		resp.RefundAmount = derefInt64(result.Amount.Refund)
+		resp.TotalAmount = derefInt64(result.Amount.Total)
+	}
+	if result.SuccessTime != nil {
+		resp.RefundedAt = *result.SuccessTime
+	}
+	return resp, nil
+}
+
 // ParseNotify 解析异步通知
 //
 // 回调通知的 Transaction 结构与支付方式无关（APP/JSAPI/Native 共用同一格式），
@@ -478,6 +509,60 @@ func (p *Provider) ParseNotify(ctx context.Context, r *http.Request) (*paymgr.No
 		}
 	}
 
+	return result, nil
+}
+
+// refundNotifyResource 微信退款异步通知解密后的业务数据体。
+//
+// 官方字段定义参考 https://pay.weixin.qq.com/doc/v3/merchant/4012791449。
+// 注意退款通知中状态字段名为 refund_status，与 QueryRefund 响应中的
+// status 字段不同，因此不能直接复用 refunddomestic.Refund。
+type refundNotifyResource struct {
+	Mchid               string `json:"mchid"`
+	OutTradeNo          string `json:"out_trade_no"`
+	TransactionID       string `json:"transaction_id"`
+	OutRefundNo         string `json:"out_refund_no"`
+	RefundID            string `json:"refund_id"`
+	RefundStatus        string `json:"refund_status"`
+	SuccessTime         string `json:"success_time"`
+	UserReceivedAccount string `json:"user_received_account"`
+	Amount              struct {
+		Total       int64 `json:"total"`
+		Refund      int64 `json:"refund"`
+		PayerTotal  int64 `json:"payer_total"`
+		PayerRefund int64 `json:"payer_refund"`
+	} `json:"amount"`
+}
+
+// ParseRefundNotify 解析退款异步通知
+//
+// 微信退款通知的 event_type 为 REFUND.SUCCESS / REFUND.ABNORMAL / REFUND.CLOSED，
+// resource 解密后的 JSON 字段与支付通知不同（状态字段名为 refund_status）。
+func (p *Provider) ParseRefundNotify(ctx context.Context, r *http.Request) (*paymgr.RefundNotifyResult, error) {
+	if p.notifyHandler == nil {
+		return nil, fmt.Errorf("wechat: notify handler not initialized, " +
+			"please configure it in NewProvider (see comments for setup instructions)")
+	}
+
+	var res refundNotifyResource
+	if _, err := p.notifyHandler.ParseNotifyRequest(ctx, r, &res); err != nil {
+		return nil, fmt.Errorf("%w: %v", paymgr.ErrInvalidNotify, err)
+	}
+
+	result := &paymgr.RefundNotifyResult{
+		Channel:             paymgr.ChannelWechat,
+		OutTradeNo:          res.OutTradeNo,
+		TransactionID:       res.TransactionID,
+		OutRefundNo:         res.OutRefundNo,
+		RefundID:            res.RefundID,
+		RefundStatus:        mapWechatRefundStatusString(res.RefundStatus),
+		RefundAmount:        res.Amount.Refund,
+		TotalAmount:         res.Amount.Total,
+		UserReceivedAccount: res.UserReceivedAccount,
+	}
+	if res.SuccessTime != "" {
+		result.RefundedAt = parseTime(res.SuccessTime)
+	}
 	return result, nil
 }
 
@@ -555,6 +640,33 @@ func generateNonceStr() (string, error) {
 		return "", err
 	}
 	return fmt.Sprintf("%x", b), nil
+}
+
+// mapWechatRefundStatus 将 QueryRefund 返回的 Status 指针映射为统一退款状态.
+func mapWechatRefundStatus(s *refunddomestic.Status) paymgr.RefundStatus {
+	if s == nil {
+		return paymgr.RefundStatusError
+	}
+	return mapWechatRefundStatusString(string(*s))
+}
+
+// mapWechatRefundStatusString 将微信退款状态字符串映射为统一退款状态.
+//
+// 同时覆盖 QueryRefund 响应中的 status 字段和退款异步通知中的 refund_status 字段，
+// 两者取值相同：SUCCESS / CLOSED / PROCESSING / ABNORMAL。
+func mapWechatRefundStatusString(state string) paymgr.RefundStatus {
+	switch state {
+	case "SUCCESS":
+		return paymgr.RefundStatusSuccess
+	case "CLOSED":
+		return paymgr.RefundStatusClosed
+	case "PROCESSING":
+		return paymgr.RefundStatusProcessing
+	case "ABNORMAL":
+		return paymgr.RefundStatusAbnormal
+	default:
+		return paymgr.RefundStatusError
+	}
 }
 
 // mapWechatTradeState 微信交易状态映射到统一状态

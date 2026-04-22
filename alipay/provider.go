@@ -463,6 +463,57 @@ func (p *Provider) Refund(ctx context.Context, req *paymgr.RefundRequest) (*paym
 	}, nil
 }
 
+// QueryRefund 查询退款.
+//
+// 调用 alipay.trade.fastpay.refund.query，按退款请求号（OutRequestNo 即商户退款单号）查询。
+// 未查到退款记录时返回 ErrOrderNotFound。
+func (p *Provider) QueryRefund(ctx context.Context, req *paymgr.QueryRefundRequest) (*paymgr.QueryRefundResponse, error) {
+	trade := alipay.TradeFastPayRefundQuery{}
+	trade.OutRequestNo = req.OutRefundNo
+	if req.TransactionID != "" {
+		trade.TradeNo = req.TransactionID
+	} else {
+		trade.OutTradeNo = req.OutTradeNo
+	}
+
+	result, err := p.client.TradeFastPayRefundQuery(ctx, trade)
+	if err != nil {
+		return nil, wrapAlipayError(err)
+	}
+	if !result.IsSuccess() {
+		if result.SubCode == "ACQ.TRADE_NOT_EXIST" {
+			return nil, paymgr.ErrOrderNotFound
+		}
+		return nil, paymgr.NewChannelError(
+			paymgr.ChannelAlipay,
+			result.SubCode,
+			result.SubMsg,
+			nil,
+		)
+	}
+
+	resp := &paymgr.QueryRefundResponse{
+		Channel:       paymgr.ChannelAlipay,
+		OutTradeNo:    result.OutTradeNo,
+		TransactionID: result.TradeNo,
+		OutRefundNo:   result.OutRequestNo,
+		RefundID:      result.TradeNo, // 支付宝无独立退款号，退款单通过交易号 + 退款请求号联合定位
+		RefundStatus:  mapAlipayRefundStatus(result.RefundStatus),
+	}
+	if result.RefundAmount != "" {
+		resp.RefundAmount = yuanToCent(result.RefundAmount)
+	}
+	if result.TotalAmount != "" {
+		resp.TotalAmount = yuanToCent(result.TotalAmount)
+	}
+	if result.GMTRefundPay != "" {
+		if t, err := time.Parse("2006-01-02 15:04:05", result.GMTRefundPay); err == nil {
+			resp.RefundedAt = t
+		}
+	}
+	return resp, nil
+}
+
 // ParseNotify 解析异步通知.
 //
 // smartwalle/alipay 的 DecodeNotification 内部已完成验签。
@@ -483,6 +534,15 @@ func (p *Provider) ParseNotify(ctx context.Context, r *http.Request) (*paymgr.No
 		TransactionID: noti.TradeNo,
 		TradeStatus:   mapAlipayTradeStatus(noti.TradeStatus),
 		BuyerID:       noti.BuyerId,
+	}
+
+	// 退款事件识别：
+	// 支付宝退款没有独立通知端点，退款结果与支付结果共用同一个 notify_url。
+	// 当 GmtRefund 或 RefundFee 非空时，本次回调是退款事件；此时原始 trade_status
+	// 在全额退款下为 TRADE_CLOSED、在部分退款下仍为 TRADE_SUCCESS，
+	// 业务层无法仅凭交易状态区分，因此在此显式覆盖为 Refunded。
+	if noti.GmtRefund != "" || noti.RefundFee != "" {
+		result.TradeStatus = paymgr.TradeStatusRefunded
 	}
 
 	// 金额
@@ -508,6 +568,16 @@ func (p *Provider) ParseNotify(ctx context.Context, r *http.Request) (*paymgr.No
 	return result, nil
 }
 
+// ParseRefundNotify 解析退款异步通知.
+//
+// 支付宝没有独立的退款异步通知端点，退款结果通过与支付相同的 notify_url 回调。
+// 请使用 ParseNotify 解析并检查 TradeStatus == TradeStatusRefunded。
+func (p *Provider) ParseRefundNotify(_ context.Context, _ *http.Request) (*paymgr.RefundNotifyResult, error) {
+	return nil, fmt.Errorf("%w: alipay refund result is delivered via the payment notify endpoint; "+
+		"call ParseNotify and check TradeStatus==%s instead",
+		paymgr.ErrNotSupported, paymgr.TradeStatusRefunded)
+}
+
 // ACKNotify 回写成功响应
 //
 // 支付宝需返回纯文本 "success".
@@ -516,6 +586,23 @@ func (p *Provider) ACKNotify(w http.ResponseWriter) {
 }
 
 // --- 内部辅助函数 ---
+
+// mapAlipayRefundStatus 支付宝退款状态映射.
+//
+// 支付宝文档: refund_status 仅在退款处理中/成功时返回具体值，未返回该字段表示
+// 退款请求未收到或退款失败，统一归类为 Error。
+func mapAlipayRefundStatus(status string) paymgr.RefundStatus {
+	switch status {
+	case "REFUND_SUCCESS":
+		return paymgr.RefundStatusSuccess
+	case "REFUND_PROCESSING":
+		return paymgr.RefundStatusProcessing
+	case "REFUND_FAIL":
+		return paymgr.RefundStatusError
+	default:
+		return paymgr.RefundStatusError
+	}
+}
 
 // mapAlipayTradeStatus 支付宝交易状态映射.
 func mapAlipayTradeStatus(status alipay.TradeStatus) paymgr.TradeStatus {
@@ -637,35 +724,44 @@ func decodePassbackParams(raw string) map[string]string {
 	}
 
 	// 优先按标准 query string 解析
-	if values, err := url.ParseQuery(raw); err == nil && len(values) > 0 {
-		// 验证解析结果合理（至少有一个非空 key）
-		result := make(map[string]string, len(values))
-		for k, v := range values {
-			if len(v) == 0 {
-				result[k] = ""
-				continue
-			}
-			result[k] = v[0]
-		}
-		return result
+	if values, err := url.ParseQuery(raw); err == nil && len(values) > 0 && !hasEncodedSeparator(values) {
+		return flattenValues(values)
 	}
 
-	// 兜底：尝试先 unescape 再解析（兼容旧版双重编码）
-	if decoded, err := url.QueryUnescape(raw); err == nil {
-		if values, err := url.ParseQuery(decoded); err == nil && len(values) > 0 {
-			result := make(map[string]string, len(values))
-			for k, v := range values {
-				if len(v) == 0 {
-					result[k] = ""
-					continue
-				}
-				result[k] = v[0]
-			}
-			return result
+	// 兜底：兼容整串被 URL-encode 过一次的旧版格式（例如 "a%3D1%26b%3D2"）。
+	// 这类输入里 & / = 都被转义过，ParseQuery 会把整串当成一个 key，
+	// 需要先 QueryUnescape 再解析。
+	if decoded, err := url.QueryUnescape(raw); err == nil && decoded != raw {
+		if values, err := url.ParseQuery(decoded); err == nil && len(values) > 0 && !hasEncodedSeparator(values) {
+			return flattenValues(values)
 		}
 	}
 
 	return nil
+}
+
+// hasEncodedSeparator 判断 ParseQuery 的结果是否疑似"整串被 URL-encode 过"。
+// 正常 query string 的 key 里不会出现 = 或 &，若出现则说明原始分隔符仍是转义态，
+// 这次解析得到的 key 其实是未分隔的整串，需要走兜底路径。
+func hasEncodedSeparator(values url.Values) bool {
+	for k := range values {
+		if strings.ContainsAny(k, "=&") {
+			return true
+		}
+	}
+	return false
+}
+
+func flattenValues(values url.Values) map[string]string {
+	result := make(map[string]string, len(values))
+	for k, v := range values {
+		if len(v) == 0 {
+			result[k] = ""
+			continue
+		}
+		result[k] = v[0]
+	}
+	return result
 }
 
 func (c *Config) hasAppCert() bool {

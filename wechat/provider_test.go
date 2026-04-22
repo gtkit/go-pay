@@ -7,6 +7,7 @@ import (
 
 	"github.com/gtkit/go-pay/paymgr"
 	"github.com/wechatpay-apiv3/wechatpay-go/core"
+	"github.com/wechatpay-apiv3/wechatpay-go/services/refunddomestic"
 )
 
 func TestParseTimeRFC3339(t *testing.T) {
@@ -25,6 +26,49 @@ func TestParseTimeRFC3339(t *testing.T) {
 func TestParseTimeInvalidReturnsZero(t *testing.T) {
 	if got := parseTime("not-a-time"); !got.IsZero() {
 		t.Fatalf("parseTime returned %v, want zero time", got)
+	}
+}
+
+func TestMapWechatRefundStatus(t *testing.T) {
+	success := refunddomestic.STATUS_SUCCESS
+	closed := refunddomestic.STATUS_CLOSED
+	processing := refunddomestic.STATUS_PROCESSING
+	abnormal := refunddomestic.STATUS_ABNORMAL
+
+	tests := []struct {
+		name string
+		in   *refunddomestic.Status
+		want paymgr.RefundStatus
+	}{
+		{name: "nil", in: nil, want: paymgr.RefundStatusError},
+		{name: "success", in: &success, want: paymgr.RefundStatusSuccess},
+		{name: "closed", in: &closed, want: paymgr.RefundStatusClosed},
+		{name: "processing", in: &processing, want: paymgr.RefundStatusProcessing},
+		{name: "abnormal", in: &abnormal, want: paymgr.RefundStatusAbnormal},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := mapWechatRefundStatus(tt.in); got != tt.want {
+				t.Fatalf("mapWechatRefundStatus(%v) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestMapWechatRefundStatusString(t *testing.T) {
+	tests := map[string]paymgr.RefundStatus{
+		"SUCCESS":    paymgr.RefundStatusSuccess,
+		"CLOSED":     paymgr.RefundStatusClosed,
+		"PROCESSING": paymgr.RefundStatusProcessing,
+		"ABNORMAL":   paymgr.RefundStatusAbnormal,
+		"":           paymgr.RefundStatusError,
+		"UNKNOWN":    paymgr.RefundStatusError,
+	}
+	for in, want := range tests {
+		if got := mapWechatRefundStatusString(in); got != want {
+			t.Fatalf("mapWechatRefundStatusString(%q) = %q, want %q", in, got, want)
+		}
 	}
 }
 

@@ -130,6 +130,18 @@ func (m *Manager) Refund(ctx context.Context, ch Channel, req *RefundRequest) (*
 	return p.Refund(ctx, req)
 }
 
+// QueryRefund 查询退款.
+func (m *Manager) QueryRefund(ctx context.Context, ch Channel, req *QueryRefundRequest) (*QueryRefundResponse, error) {
+	if err := req.Validate(); err != nil {
+		return nil, err
+	}
+	p, err := m.Provider(ch)
+	if err != nil {
+		return nil, err
+	}
+	return p.QueryRefund(ctx, req)
+}
+
 // ParseNotify 解析异步通知.
 func (m *Manager) ParseNotify(ctx context.Context, ch Channel, r *http.Request) (*NotifyResult, error) {
 	p, err := m.Provider(ch)
@@ -137,6 +149,17 @@ func (m *Manager) ParseNotify(ctx context.Context, ch Channel, r *http.Request) 
 		return nil, err
 	}
 	return p.ParseNotify(ctx, r)
+}
+
+// ParseRefundNotify 解析退款异步通知.
+//
+// 仅微信支付实现；支付宝将返回 ErrNotSupported（见 Provider.ParseRefundNotify 注释）。
+func (m *Manager) ParseRefundNotify(ctx context.Context, ch Channel, r *http.Request) (*RefundNotifyResult, error) {
+	p, err := m.Provider(ch)
+	if err != nil {
+		return nil, err
+	}
+	return p.ParseRefundNotify(ctx, r)
 }
 
 // ACKNotify 响应异步通知.

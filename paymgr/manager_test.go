@@ -32,7 +32,15 @@ func (p stubProvider) Refund(context.Context, *RefundRequest) (*RefundResponse, 
 	return nil, nil
 }
 
+func (p stubProvider) QueryRefund(context.Context, *QueryRefundRequest) (*QueryRefundResponse, error) {
+	return nil, nil
+}
+
 func (p stubProvider) ParseNotify(context.Context, *http.Request) (*NotifyResult, error) {
+	return nil, nil
+}
+
+func (p stubProvider) ParseRefundNotify(context.Context, *http.Request) (*RefundNotifyResult, error) {
 	return nil, nil
 }
 

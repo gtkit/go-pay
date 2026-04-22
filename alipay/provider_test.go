@@ -1,10 +1,14 @@
 package alipay
 
 import (
+	"context"
+	"errors"
 	"maps"
 	"math"
 	"net/url"
 	"testing"
+
+	"github.com/gtkit/go-pay/paymgr"
 )
 
 func TestCentToYuan(t *testing.T) {
@@ -88,5 +92,31 @@ func TestDecodePassbackParamsBackwardCompatible(t *testing.T) {
 
 	if got := decodePassbackParams(raw); !maps.Equal(got, want) {
 		t.Fatalf("decodePassbackParams(%q) = %#v, want %#v", raw, got, want)
+	}
+}
+
+func TestMapAlipayRefundStatus(t *testing.T) {
+	tests := map[string]paymgr.RefundStatus{
+		"REFUND_SUCCESS":    paymgr.RefundStatusSuccess,
+		"REFUND_PROCESSING": paymgr.RefundStatusProcessing,
+		"REFUND_FAIL":       paymgr.RefundStatusError,
+		"":                  paymgr.RefundStatusError,
+		"UNKNOWN":           paymgr.RefundStatusError,
+	}
+	for in, want := range tests {
+		if got := mapAlipayRefundStatus(in); got != want {
+			t.Fatalf("mapAlipayRefundStatus(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestParseRefundNotifyReturnsNotSupported(t *testing.T) {
+	p := &Provider{}
+	_, err := p.ParseRefundNotify(context.Background(), nil)
+	if err == nil {
+		t.Fatal("ParseRefundNotify returned nil error")
+	}
+	if !errors.Is(err, paymgr.ErrNotSupported) {
+		t.Fatalf("ParseRefundNotify err = %v, want wrapped ErrNotSupported", err)
 	}
 }

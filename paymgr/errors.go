@@ -15,6 +15,7 @@ var (
 	ErrInvalidSign     = errors.New("payment: invalid signature")
 	ErrInvalidNotify   = errors.New("payment: invalid notification")
 	ErrUnsupportedType = errors.New("payment: unsupported trade type")
+	ErrNotSupported    = errors.New("payment: operation not supported by channel")
 )
 
 // ChannelError 渠道级错误，包含渠道原始错误码和描述

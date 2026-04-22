@@ -229,6 +229,56 @@ func handleNotify(w http.ResponseWriter, r *http.Request, ch paymgr.Channel) {
 	}
 }
 
+// handleQueryRefund 查询退款
+//
+// GET /api/v1/refund?channel=wechat&out_refund_no=REF20250305001
+//
+// 支付宝查询退款时还需附带原订单号: &out_trade_no=ORD20250305001
+func handleQueryRefund(w http.ResponseWriter, r *http.Request) {
+	channel := paymgr.Channel(r.URL.Query().Get("channel"))
+	outRefundNo := r.URL.Query().Get("out_refund_no")
+	outTradeNo := r.URL.Query().Get("out_trade_no")
+
+	ctx := r.Context()
+	resp, err := payMgr.QueryRefund(ctx, channel, &paymgr.QueryRefundRequest{
+		OutRefundNo: outRefundNo,
+		OutTradeNo:  outTradeNo,
+	})
+	if err != nil {
+		log.Printf("query refund error: %v", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// handleWechatRefundNotify 微信退款异步通知
+//
+// POST /api/v1/notify/refund/wechat
+//
+// 支付宝没有独立的退款通知端点，退款结果复用支付通知端点，
+// 通过 handleAlipayNotify + 判断 TradeStatus == paymgr.TradeStatusRefunded 处理。
+func handleWechatRefundNotify(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	result, err := payMgr.ParseRefundNotify(ctx, paymgr.ChannelWechat, r)
+	if err != nil {
+		log.Printf("[wechat] parse refund notify error: %v", err)
+		http.Error(w, "invalid notification", http.StatusBadRequest)
+		return
+	}
+
+	log.Printf("[wechat] refund notify: out_refund_no=%s, refund_id=%s, status=%s, refund_amount=%d fen",
+		result.OutRefundNo, result.RefundID, result.RefundStatus, result.RefundAmount)
+
+	// 业务层: 幂等更新退款单状态；result.RefundStatus == paymgr.RefundStatusSuccess 时标记退款完成。
+
+	if err := payMgr.ACKNotify(paymgr.ChannelWechat, w); err != nil {
+		log.Printf("[wechat] ack refund notify error: %v", err)
+	}
+}
+
 // handleRefund 退款
 //
 // POST /api/v1/refund
@@ -286,10 +336,13 @@ func main() {
 	mux.HandleFunc("POST /api/v1/orders", handleCreateOrder)
 	mux.HandleFunc("GET /api/v1/orders", handleQueryOrder)
 	mux.HandleFunc("POST /api/v1/refund", handleRefund)
+	mux.HandleFunc("GET /api/v1/refund", handleQueryRefund)
 
 	// 支付回调（必须 HTTPS，且路径不附带额外参数）
 	mux.HandleFunc("POST /api/v1/notify/wechat", handleWechatNotify)
 	mux.HandleFunc("POST /api/v1/notify/alipay", handleAlipayNotify)
+	// 微信退款通知（支付宝的退款结果随 handleAlipayNotify 一并回来，不需要单独路由）
+	mux.HandleFunc("POST /api/v1/notify/refund/wechat", handleWechatRefundNotify)
 
 	log.Println("server starting on :8080")
 	if err := http.ListenAndServe(":8080", mux); err != nil {

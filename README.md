@@ -270,7 +270,9 @@ wechat.WithPlatformCertificatePath("/path/to/wechatpay_cert.pem")
 - `QueryOrder`
 - `CloseOrder`
 - `Refund`
+- `QueryRefund`
 - `ParseNotify`
+- `ParseRefundNotify`（微信独立的退款异步通知）
 - `ACKNotify`
 
 其中下单只支持：
@@ -389,7 +391,9 @@ alipayProvider, err := alipay.NewProviderWithConfig(&alipay.Config{...})
 - `QueryOrder`
 - `CloseOrder`
 - `Refund`
-- `ParseNotify`
+- `QueryRefund`
+- `ParseNotify`（当 `GmtRefund` 或 `RefundFee` 非空时，`TradeStatus` 会映射为 `TradeStatusRefunded`）
+- `ParseRefundNotify`（支付宝无独立退款通知端点，本方法直接返回 `paymgr.ErrNotSupported`；请使用 `ParseNotify` 识别退款事件）
 - `ACKNotify`
 
 下单支持的交易类型：
@@ -731,7 +735,61 @@ fmt.Println(resp.RefundID)
 fmt.Println(resp.RefundAmount)
 ```
 
-### 9.5 处理异步通知 `ParseNotify` + `ACKNotify`
+### 9.5 查询退款 `QueryRefund`
+
+方法签名：
+
+```go
+func (m *Manager) QueryRefund(ctx context.Context, ch Channel, req *QueryRefundRequest) (*QueryRefundResponse, error)
+```
+
+请求结构：
+
+```go
+type QueryRefundRequest struct {
+	OutTradeNo    string // 支付宝用；与 TransactionID 二选一
+	TransactionID string // 支付宝用；与 OutTradeNo 二选一
+	OutRefundNo   string // 必填
+}
+```
+
+响应结构：
+
+```go
+type QueryRefundResponse struct {
+	Channel       Channel
+	OutTradeNo    string
+	TransactionID string
+	OutRefundNo   string
+	RefundID      string
+	RefundStatus  RefundStatus // processing / success / closed / abnormal / error
+	RefundAmount  int64        // 分
+	TotalAmount   int64        // 分
+	RefundedAt    time.Time    // 退款成功时才有值
+}
+```
+
+字段要求：
+
+- `OutRefundNo` 必填
+- 支付宝渠道需要额外提供 `OutTradeNo` 或 `TransactionID`（微信可留空）
+
+示例：
+
+```go
+resp, err := mgr.QueryRefund(ctx, paymgr.ChannelWechat, &paymgr.QueryRefundRequest{
+	OutRefundNo: "REF20250305001",
+})
+if err != nil {
+	return err
+}
+
+if resp.RefundStatus == paymgr.RefundStatusSuccess {
+	// 退款成功
+}
+```
+
+### 9.6 处理异步通知 `ParseNotify` + `ACKNotify`
 
 方法签名：
 
@@ -800,6 +858,70 @@ type NotifyResult struct {
 - 支付宝：返回纯文本 `success`
 
 `Manager` 已经帮你按渠道封装好了，不需要业务自己区分响应格式。
+
+### 9.7 处理退款异步通知 `ParseRefundNotify`
+
+方法签名：
+
+```go
+func (m *Manager) ParseRefundNotify(ctx context.Context, ch Channel, r *http.Request) (*RefundNotifyResult, error)
+```
+
+响应结构：
+
+```go
+type RefundNotifyResult struct {
+	Channel             Channel
+	OutTradeNo          string
+	TransactionID       string
+	OutRefundNo         string
+	RefundID            string
+	RefundStatus        RefundStatus
+	RefundAmount        int64     // 分
+	TotalAmount         int64     // 分
+	RefundedAt          time.Time
+	UserReceivedAccount string    // 仅微信返回，如 "招商银行信用卡0403"
+}
+```
+
+#### 微信
+
+微信退款会独立推送异步通知到 `RefundRequest.NotifyURL`，`event_type` 为 `REFUND.SUCCESS` / `REFUND.ABNORMAL` / `REFUND.CLOSED`。使用本方法解析：
+
+```go
+func handleWechatRefundNotify(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	result, err := mgr.ParseRefundNotify(ctx, paymgr.ChannelWechat, r)
+	if err != nil {
+		http.Error(w, "invalid notify", http.StatusBadRequest)
+		return
+	}
+
+	// 幂等更新退款单状态；RefundStatusSuccess 才代表退款入账成功
+	_ = result
+
+	_ = mgr.ACKNotify(paymgr.ChannelWechat, w)
+}
+```
+
+#### 支付宝
+
+支付宝没有独立的退款异步通知端点，退款结果会复用支付通知端点（即 `UnifiedOrderRequest.NotifyURL`）推送回来。直接调用 `ParseRefundNotify` 会返回 `paymgr.ErrNotSupported`。
+
+正确做法：使用 `ParseNotify` 并通过 `TradeStatus == paymgr.TradeStatusRefunded` 识别退款事件。当回调的 `gmt_refund` 或 `refund_fee` 字段非空时，`go-pay` 会自动把 `TradeStatus` 映射为 `TradeStatusRefunded`。
+
+```go
+result, err := mgr.ParseNotify(ctx, paymgr.ChannelAlipay, r)
+if err != nil { /* ... */ }
+
+switch result.TradeStatus {
+case paymgr.TradeStatusPaid:
+	// 支付成功
+case paymgr.TradeStatusRefunded:
+	// 退款成功（部分或全额）
+}
+```
 
 ## 10. 常见错误与排查
 

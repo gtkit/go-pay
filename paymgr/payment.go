@@ -43,6 +43,21 @@ const (
 	TradeStatusError    TradeStatus = "error"    // 异常
 )
 
+// RefundStatus 退款状态.
+//
+// 各渠道原始状态映射:
+//   - 微信: SUCCESS→Success, CLOSED→Closed, PROCESSING→Processing, ABNORMAL→Abnormal
+//   - 支付宝: REFUND_SUCCESS→Success, REFUND_PROCESSING→Processing, REFUND_FAIL/未返回→Error
+type RefundStatus string
+
+const (
+	RefundStatusProcessing RefundStatus = "processing" // 退款处理中
+	RefundStatusSuccess    RefundStatus = "success"    // 退款成功
+	RefundStatusClosed     RefundStatus = "closed"     // 退款关闭（未成功）
+	RefundStatusAbnormal   RefundStatus = "abnormal"   // 退款异常（需人工介入）
+	RefundStatusError      RefundStatus = "error"      // 未知/失败
+)
+
 // --- 请求/响应结构 ---
 
 // UnifiedOrderRequest 统一下单请求.
@@ -166,6 +181,57 @@ type RefundResponse struct {
 	RefundAmount int64   // 退款金额，单位：分
 }
 
+// QueryRefundRequest 退款查询请求.
+//
+// OutRefundNo 必填；OutTradeNo / TransactionID 仅支付宝需要（二选一）。
+type QueryRefundRequest struct {
+	OutTradeNo    string // 商户订单号（支付宝用，与 TransactionID 二选一）
+	TransactionID string // 渠道交易号（支付宝用，与 OutTradeNo 二选一）
+	OutRefundNo   string // 商户退款单号，必填
+}
+
+// Validate 校验退款查询请求.
+func (r *QueryRefundRequest) Validate() error {
+	if r == nil {
+		return fmt.Errorf("%w: query refund request is required", ErrInvalidParam)
+	}
+	if r.OutRefundNo == "" {
+		return fmt.Errorf("%w: out_refund_no is required", ErrInvalidParam)
+	}
+	return nil
+}
+
+// QueryRefundResponse 退款查询响应.
+type QueryRefundResponse struct {
+	Channel       Channel      // 支付渠道
+	OutTradeNo    string       // 商户订单号
+	TransactionID string       // 渠道交易号
+	OutRefundNo   string       // 商户退款单号
+	RefundID      string       // 渠道退款单号
+	RefundStatus  RefundStatus // 退款状态
+	RefundAmount  int64        // 本次退款金额，单位：分
+	TotalAmount   int64        // 原订单总金额，单位：分
+	RefundedAt    time.Time    // 退款完成时间（成功时有值）
+}
+
+// RefundNotifyResult 退款异步通知解析结果.
+//
+// 目前仅微信支付提供独立的退款异步通知。支付宝的退款结果通过
+// 与支付相同的 notify_url 回调，使用 Provider.ParseNotify 解析即可
+// （GmtRefund / RefundFee 非空时，TradeStatus 会被映射为 TradeStatusRefunded）。
+type RefundNotifyResult struct {
+	Channel             Channel      // 支付渠道
+	OutTradeNo          string       // 商户订单号
+	TransactionID       string       // 渠道交易号
+	OutRefundNo         string       // 商户退款单号
+	RefundID            string       // 渠道退款单号
+	RefundStatus        RefundStatus // 退款状态
+	RefundAmount        int64        // 本次退款金额，单位：分
+	TotalAmount         int64        // 原订单总金额，单位：分
+	RefundedAt          time.Time    // 退款完成时间
+	UserReceivedAccount string       // 退款入账方（微信返回，如 "招商银行信用卡0403"）
+}
+
 // NotifyResult 回调通知解析结果.
 type NotifyResult struct {
 	Channel       Channel           // 支付渠道
@@ -208,11 +274,23 @@ type Provider interface {
 	// 对已支付的订单发起退款，支持部分退款。
 	Refund(ctx context.Context, req *RefundRequest) (*RefundResponse, error)
 
+	// QueryRefund 查询退款
+	//
+	// 按商户退款单号查询退款状态。
+	QueryRefund(ctx context.Context, req *QueryRefundRequest) (*QueryRefundResponse, error)
+
 	// ParseNotify 解析异步通知
 	//
 	// 从 HTTP 请求中解析并验签支付结果通知。
 	// 验签通过返回 NotifyResult，验签失败返回 error。
 	ParseNotify(ctx context.Context, r *http.Request) (*NotifyResult, error)
+
+	// ParseRefundNotify 解析退款异步通知
+	//
+	// 微信支付：解析独立的退款通知（event_type 为 REFUND.*）。
+	// 支付宝：由于退款结果复用支付通知端点，此方法返回 ErrNotSupported；
+	// 接入方应使用 ParseNotify 接收退款事件并通过 TradeStatus 判断。
+	ParseRefundNotify(ctx context.Context, r *http.Request) (*RefundNotifyResult, error)
 
 	// ACKNotify 响应异步通知
 	//
