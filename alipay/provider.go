@@ -347,6 +347,14 @@ func (p *Provider) UnifiedOrder(ctx context.Context, req *paymgr.UnifiedOrderReq
 		// TradeWapPay 返回跳转 URL
 		resp.PayURL = result.String()
 
+	case paymgr.TradeTypePage:
+		trade := buildTradePagePay(req, amount, timeoutExpress, passbackParams)
+		result, err := p.client.TradePagePay(trade)
+		if err != nil {
+			return nil, wrapAlipayError(err)
+		}
+		resp.PayURL = result.String()
+
 	default:
 		return nil, fmt.Errorf("%w: %s", paymgr.ErrUnsupportedType, req.TradeType)
 	}
@@ -626,6 +634,24 @@ func wrapAlipayError(err error) error {
 		return nil
 	}
 	return paymgr.NewChannelError(paymgr.ChannelAlipay, "SDK_ERROR", err.Error(), err)
+}
+
+func buildTradePagePay(req *paymgr.UnifiedOrderRequest, amount, timeoutExpress, passbackParams string) alipay.TradePagePay {
+	trade := alipay.TradePagePay{}
+	trade.OutTradeNo = req.OutTradeNo
+	trade.TotalAmount = amount
+	trade.Subject = req.Subject
+	trade.NotifyURL = req.NotifyURL
+	if req.ReturnURL != "" {
+		trade.ReturnURL = req.ReturnURL
+	}
+	if timeoutExpress != "" {
+		trade.TimeoutExpress = timeoutExpress
+	}
+	if passbackParams != "" {
+		trade.PassbackParams = passbackParams
+	}
+	return trade
 }
 
 // centToYuan 分转元，返回两位小数字符串.

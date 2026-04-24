@@ -23,6 +23,8 @@ import (
 	"github.com/wechatpay-apiv3/wechatpay-go/core/option"
 	"github.com/wechatpay-apiv3/wechatpay-go/services/payments"
 	"github.com/wechatpay-apiv3/wechatpay-go/services/payments/app"
+	"github.com/wechatpay-apiv3/wechatpay-go/services/payments/h5"
+	"github.com/wechatpay-apiv3/wechatpay-go/services/payments/jsapi"
 	"github.com/wechatpay-apiv3/wechatpay-go/services/payments/native"
 	"github.com/wechatpay-apiv3/wechatpay-go/services/refunddomestic"
 	"github.com/wechatpay-apiv3/wechatpay-go/utils"
@@ -255,7 +257,7 @@ func (p *Provider) Channel() paymgr.Channel {
 
 // UnifiedOrder 统一下单
 //
-// 主要支持 APP 支付，同时保留 Native 扫码支付能力。
+// 当前支持 APP、JSAPI、小程序/公众号、Native 扫码和 H5 支付。
 func (p *Provider) UnifiedOrder(ctx context.Context, req *paymgr.UnifiedOrderRequest) (*paymgr.UnifiedOrderResponse, error) {
 	resp := &paymgr.UnifiedOrderResponse{
 		Channel: paymgr.ChannelWechat,
@@ -306,6 +308,39 @@ func (p *Provider) UnifiedOrder(ctx context.Context, req *paymgr.UnifiedOrderReq
 		}
 		resp.AppParams = appParams
 
+	case paymgr.TradeTypeJSAPI:
+		if req.OpenID == "" {
+			return nil, fmt.Errorf("%w: openid is required for wechat jsapi", paymgr.ErrInvalidParam)
+		}
+
+		svc := jsapi.JsapiApiService{Client: p.client}
+		result, _, err := svc.Prepay(ctx, jsapi.PrepayRequest{
+			Appid:       core.String(p.cfg.AppID),
+			Mchid:       core.String(p.cfg.MchID),
+			Description: core.String(req.Subject),
+			OutTradeNo:  core.String(req.OutTradeNo),
+			TimeExpire:  timeExpire,
+			Attach:      attach,
+			NotifyUrl:   core.String(req.NotifyURL),
+			Amount: &jsapi.Amount{
+				Total:    core.Int64(req.TotalAmount),
+				Currency: core.String("CNY"),
+			},
+			Payer: &jsapi.Payer{
+				Openid: core.String(req.OpenID),
+			},
+		})
+		if err != nil {
+			return nil, wrapWechatError(err)
+		}
+		resp.PrepayID = derefString(result.PrepayId)
+
+		jsapiParams, err := p.buildJSAPIPayParams(resp.PrepayID)
+		if err != nil {
+			return nil, fmt.Errorf("wechat: build jsapi pay params: %w", err)
+		}
+		resp.JSAPIParams = jsapiParams
+
 	case paymgr.TradeTypeNative:
 		svc := native.NativeApiService{Client: p.client}
 		result, _, err := svc.Prepay(ctx, native.PrepayRequest{
@@ -326,8 +361,33 @@ func (p *Provider) UnifiedOrder(ctx context.Context, req *paymgr.UnifiedOrderReq
 		}
 		resp.CodeURL = *result.CodeUrl
 
+	case paymgr.TradeTypeH5:
+		if req.ClientIP == "" {
+			return nil, fmt.Errorf("%w: client_ip is required for wechat h5", paymgr.ErrInvalidParam)
+		}
+
+		svc := h5.H5ApiService{Client: p.client}
+		result, _, err := svc.Prepay(ctx, h5.PrepayRequest{
+			Appid:       core.String(p.cfg.AppID),
+			Mchid:       core.String(p.cfg.MchID),
+			Description: core.String(req.Subject),
+			OutTradeNo:  core.String(req.OutTradeNo),
+			TimeExpire:  timeExpire,
+			Attach:      attach,
+			NotifyUrl:   core.String(req.NotifyURL),
+			Amount: &h5.Amount{
+				Total:    core.Int64(req.TotalAmount),
+				Currency: core.String("CNY"),
+			},
+			SceneInfo: buildH5SceneInfo(req),
+		})
+		if err != nil {
+			return nil, wrapWechatError(err)
+		}
+		resp.H5URL = derefString(result.H5Url)
+
 	default:
-		return nil, fmt.Errorf("%w: wechat provider supports app and native, got %s",
+		return nil, fmt.Errorf("%w: wechat provider supports app, jsapi, native and h5, got %s",
 			paymgr.ErrUnsupportedType, req.TradeType)
 	}
 
@@ -631,7 +691,48 @@ func (p *Provider) buildAppPayParams(prepayID string) (string, error) {
 	return string(data), nil
 }
 
+// buildJSAPIPayParams 生成 JSAPI 调起微信支付所需的签名参数。
+func (p *Provider) buildJSAPIPayParams(prepayID string) (string, error) {
+	timestamp := fmt.Sprintf("%d", time.Now().Unix())
+	nonceStr, err := generateNonceStr()
+	if err != nil {
+		return "", fmt.Errorf("generate nonce: %w", err)
+	}
+
+	packageValue := "prepay_id=" + prepayID
+	message := p.cfg.AppID + "\n" + timestamp + "\n" + nonceStr + "\n" + packageValue + "\n"
+	hashed := sha256.Sum256([]byte(message))
+	signature, err := rsa.SignPKCS1v15(rand.Reader, p.privateKey, crypto.SHA256, hashed[:])
+	if err != nil {
+		return "", fmt.Errorf("rsa sign: %w", err)
+	}
+
+	params := map[string]string{
+		"appId":     p.cfg.AppID,
+		"timeStamp": timestamp,
+		"nonceStr":  nonceStr,
+		"package":   packageValue,
+		"signType":  "RSA",
+		"paySign":   base64.StdEncoding.EncodeToString(signature),
+	}
+
+	data, err := json.Marshal(params)
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
+}
+
 // --- 内部辅助函数 ---
+
+func buildH5SceneInfo(req *paymgr.UnifiedOrderRequest) *h5.SceneInfo {
+	return &h5.SceneInfo{
+		PayerClientIp: core.String(req.ClientIP),
+		H5Info: &h5.H5Info{
+			Type: core.String("Wap"),
+		},
+	}
+}
 
 // generateNonceStr 生成 32 位随机字符串
 func generateNonceStr() (string, error) {

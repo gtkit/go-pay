@@ -2,6 +2,22 @@
 
 本文件记录 `go-pay` 的公开变更。版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [Unreleased]
+
+### Added
+
+- `wechat.Provider.UnifiedOrder` 新增对 `paymgr.TradeTypeJSAPI` 和 `paymgr.TradeTypeH5` 的支持，分别接入官方 `payments/jsapi` 与 `payments/h5`。
+- 微信 JSAPI 下单成功后返回 `UnifiedOrderResponse.JSAPIParams`，用于前端调起微信支付。
+- 微信 H5 下单成功后返回 `UnifiedOrderResponse.H5URL`，用于移动浏览器拉起支付。
+- `paymgr.TradeTypePage` 新增支付宝 PC 页面支付语义，`alipay.Provider.UnifiedOrder` 现支持 `TradeTypePage` 并返回 `UnifiedOrderResponse.PayURL`。
+- 新增 `aggregate` 包，用于聚合二维码场景下的入口环境识别、渠道分流和统一动作结果编排。
+
+### Changed
+
+- 微信直连下单支持矩阵从 `app`、`native` 扩展为 `app`、`jsapi`、`native`、`h5`。
+- `example/main.go` 与 README 示例补充了微信 JSAPI/H5 的必填字段说明：JSAPI 需要 `OpenID`，H5 需要 `ClientIP`。
+- README 与示例新增支付宝 `page` 和聚合二维码编排说明，`pay_url` 字段语义扩展为支付宝 H5 / PC 页面支付跳转链接。
+
 ## [v1.1.0] - 2026-04-22
 
 ### Added

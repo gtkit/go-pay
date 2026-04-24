@@ -37,6 +37,7 @@ go get github.com/gtkit/go-pay
 
 ```text
 .
+├── aggregate/       # 聚合二维码支付编排
 ├── alipay/         # 支付宝实现
 ├── wechat/         # 微信支付实现
 ├── paymgr/         # 统一抽象层
@@ -48,6 +49,7 @@ go get github.com/gtkit/go-pay
 - `paymgr`：统一的请求、响应、错误和管理器接口
 - `wechat`：微信支付 Provider
 - `alipay`：支付宝 Provider
+- `aggregate`：聚合二维码入口分流与真实支付单编排
 
 ## 3. 支持的渠道与交易类型
 
@@ -67,14 +69,15 @@ paymgr.TradeTypeNative // 扫码支付
 paymgr.TradeTypeJSAPI  // JSAPI / 小程序 / 公众号场景
 paymgr.TradeTypeApp    // APP 支付
 paymgr.TradeTypeH5     // H5 支付
+paymgr.TradeTypePage   // PC 网页支付 / 支付宝收银台
 ```
 
 当前实现支持情况：
 
 | 渠道 | 支持的交易类型 |
 | --- | --- |
-| 微信支付 | `app`、`native` |
-| 支付宝 | `native`、`jsapi`、`app`、`h5` |
+| 微信支付 | `app`、`native`、`jsapi`、`h5` |
+| 支付宝 | `native`、`jsapi`、`app`、`h5`、`page` |
 
 如果传入未实现的类型，会返回 `paymgr.ErrUnsupportedType`。
 
@@ -283,7 +286,9 @@ wechat.WithPlatformCertificatePath("/path/to/wechatpay_cert.pem")
 其中下单只支持：
 
 - `paymgr.TradeTypeApp`
+- `paymgr.TradeTypeJSAPI`
 - `paymgr.TradeTypeNative`
+- `paymgr.TradeTypeH5`
 
 ## 7. 支付宝配置
 
@@ -407,6 +412,7 @@ alipayProvider, err := alipay.NewProviderWithConfig(&alipay.Config{...})
 - `paymgr.TradeTypeJSAPI`
 - `paymgr.TradeTypeApp`
 - `paymgr.TradeTypeH5`
+- `paymgr.TradeTypePage`
 
 ## 8. 初始化并注册 Provider
 
@@ -508,7 +514,7 @@ type UnifiedOrderRequest struct {
 | `TradeType` | 视场景 | 交易类型 |
 | `NotifyURL` | 是 | 异步通知地址 |
 | `ReturnURL` | 否 | 支付宝 H5 / WAP 同步跳转地址 |
-| `ClientIP` | 某些渠道场景需要 | 用户 IP |
+| `ClientIP` | 某些渠道场景需要 | 用户 IP；微信 H5 必填 |
 | `OpenID` | 某些渠道场景需要 | 微信 JSAPI 或支付宝买家标识场景 |
 | `ExpireAt` | 否 | 订单过期时间 |
 | `Metadata` | 否 | 附加数据，回调时会带回 |
@@ -541,6 +547,53 @@ appParams := resp.AppParams
 - `resp.AppParams`
 
 其中 `AppParams` 是 JSON 字符串，APP 端解析后传给微信 SDK。
+
+#### 微信 JSAPI 下单
+
+```go
+resp, err := mgr.UnifiedOrder(ctx, paymgr.ChannelWechat, &paymgr.UnifiedOrderRequest{
+	OutTradeNo:  "ORD202603250005",
+	TotalAmount: 100,
+	Subject:     "小程序订单",
+	TradeType:   paymgr.TradeTypeJSAPI,
+	NotifyURL:   "https://api.example.com/pay/notify/wechat",
+	OpenID:      "oUpF8uMuAJO_M2pxb1Q9zNjWeS6o",
+})
+if err != nil {
+	return err
+}
+
+jsapiParams := resp.JSAPIParams
+```
+
+重点返回：
+
+- `resp.PrepayID`
+- `resp.JSAPIParams`：JSON 字符串，前端解析后用于调起微信 JSAPI / 小程序支付
+
+#### 微信 H5 下单
+
+```go
+resp, err := mgr.UnifiedOrder(ctx, paymgr.ChannelWechat, &paymgr.UnifiedOrderRequest{
+	OutTradeNo:  "ORD202603250006",
+	TotalAmount: 100,
+	Subject:     "微信H5订单",
+	TradeType:   paymgr.TradeTypeH5,
+	NotifyURL:   "https://api.example.com/pay/notify/wechat",
+	ClientIP:    "203.0.113.10",
+})
+if err != nil {
+	return err
+}
+
+h5URL := resp.H5URL
+```
+
+重点返回：
+
+- `resp.H5URL`：微信 H5 拉起支付链接
+
+当前实现会按最常见的移动浏览器场景构造 `scene_info.h5_info.type = "Wap"`。
 
 #### 微信 Native 扫码下单
 
@@ -605,6 +658,71 @@ payURL := resp.PayURL
 重点返回：
 
 - `resp.PayURL`：跳转支付链接
+
+#### 支付宝 PC 页面下单
+
+```go
+resp, err := mgr.UnifiedOrder(ctx, paymgr.ChannelAlipay, &paymgr.UnifiedOrderRequest{
+	OutTradeNo:  "ORD202603250007",
+	TotalAmount: 100,
+	Subject:     "支付宝PC订单",
+	TradeType:   paymgr.TradeTypePage,
+	NotifyURL:   "https://api.example.com/pay/notify/alipay",
+	ReturnURL:   "https://www.example.com/pay/return",
+})
+if err != nil {
+	return err
+}
+
+pageURL := resp.PayURL
+```
+
+重点返回：
+
+- `resp.PayURL`：支付宝收银台跳转链接
+
+#### 聚合二维码编排
+
+聚合二维码不直接承载微信或支付宝原始支付码，而是承载你自己的业务入口 URL。扫码进入入口页后，可以通过 `aggregate.Service` 统一决定真实下单渠道与交易类型。
+
+```go
+resolver := aggregate.NewService(mgr)
+
+result, err := resolver.Resolve(ctx, &aggregate.ResolveRequest{
+	UserAgent:       r.UserAgent(),
+	SelectedChannel: paymgr.Channel(r.URL.Query().Get("channel")),
+	OpenID:          openID,
+	BuildUnifiedOrder: func(ch paymgr.Channel, tt paymgr.TradeType) (*paymgr.UnifiedOrderRequest, error) {
+		return &paymgr.UnifiedOrderRequest{
+			OutTradeNo:  orderNum,
+			TotalAmount: amount,
+			Subject:     subject,
+			TradeType:   tt,
+			NotifyURL:   notifyURL,
+			ReturnURL:   returnURL,
+			ClientIP:    clientIP,
+			OpenID:      openID,
+		}, nil
+	},
+})
+if err != nil {
+	return err
+}
+```
+
+`result.Action` 的语义：
+
+- `choose_channel`：普通浏览器尚未选择支付渠道，此时由你的页面展示“微信 / 支付宝”入口
+- `redirect`：跳转支付链接，支付宝取 `result.Response.PayURL`，微信 H5 取 `result.Response.H5URL`
+- `qr_code`：返回二维码内容，取 `result.Response.CodeURL`
+- `jsapi`：返回微信前端调起参数，取 `result.Response.JSAPIParams`
+
+当前决策表固定为：
+
+- 微信环境：微信 `JSAPI`
+- 支付宝环境：移动端走支付宝 `H5`，PC 走支付宝 `page`
+- 普通浏览器移动端：用户选微信走微信 `H5`，选支付宝走支付宝 `H5`
+- 普通浏览器 PC：用户选微信走微信 `native`，选支付宝走支付宝 `page`
 
 ### 9.2 查询订单 `QueryOrder`
 
@@ -1017,7 +1135,7 @@ if errors.As(err, &chErr) {
 
 在接入前建议先了解当前代码边界：
 
-- 微信 Provider 现在主要围绕 APP 支付实现，同时保留 Native 支付
+- 微信 Provider 当前覆盖 `app`、`jsapi`、`native`、`h5` 四种直连下单场景
 - 当前推荐用函数选项模式初始化，结构体配置作为兼容方式保留
 - 示例代码展示的是接入方式，不是可直接上线的完整业务代码
 

@@ -28,3 +28,24 @@ func TestRefundValidateWrapsInvalidParam(t *testing.T) {
 		t.Fatalf("Validate() error = %v, want wrapped ErrInvalidParam", err)
 	}
 }
+
+func TestTradeTypePageConstant(t *testing.T) {
+	if TradeTypePage != "page" {
+		t.Fatalf("TradeTypePage = %q, want %q", TradeTypePage, "page")
+	}
+}
+
+func TestUnifiedOrderValidateAllowsTradeTypePage(t *testing.T) {
+	req := &UnifiedOrderRequest{
+		OutTradeNo:  "ORD-PAGE-1",
+		TotalAmount: 100,
+		Subject:     "PC page order",
+		TradeType:   TradeTypePage,
+		NotifyURL:   "https://example.com/notify",
+		ReturnURL:   "https://example.com/return",
+	}
+
+	if err := req.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v, want nil", err)
+	}
+}

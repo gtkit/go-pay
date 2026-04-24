@@ -1,2 +1,17 @@
 .idea/
 .Ds_Store
+
+# Harness: 本地工具与 Agent 运行产物
+.openspec-auto-backup/
+.openspec-auto/
+.vscode/
+.DS_Store
+*.log
+.harness/
+.claude/
+.codex/
+.agents/
+openspec/
+AGENTS.md
+CLAUDE.md
+tools/

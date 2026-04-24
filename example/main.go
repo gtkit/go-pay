@@ -23,8 +23,10 @@ func initpay() {
 
 	ctx := context.Background()
 
-	// --- 初始化微信支付（APP 支付） ---
-	// AppID 是在微信开放平台注册的移动应用的 appid，不是公众号/小程序的 appid
+	// --- 初始化微信支付（直连商户） ---
+	// AppID 需与实际支付场景匹配：
+	// - APP 支付：开放平台移动应用 appid
+	// - JSAPI / H5：公众号或小程序 appid
 	wechatProvider, err := wechat.NewProvider(
 		ctx,
 		wechat.WithAppID("wx1234567890abcdef"),
@@ -57,7 +59,7 @@ func initpay() {
 	}
 	payMgr.Register(alipayProvider)
 
-	log.Println("pay providers initialized (wechat=app, alipay=cert)")
+	log.Println("pay providers initialized (wechat=direct, alipay=cert)")
 }
 
 // ----- HTTP Handlers -----
@@ -84,15 +86,27 @@ func initpay() {
 //	  "subject": "VIP月卡"
 //	}
 //
-// 返回: 微信返回 app_params（JSON），APP 端解析后传给微信 SDK 调起支付
+// 返回:
 //
-//	支付宝返回 app_params（签名字符串），APP 端直接传给支付宝 SDK
+//   - 微信 APP 返回 app_params（JSON）
+//
+//   - 微信 JSAPI 返回 jsapi_params（JSON）
+//
+//   - 微信 H5 返回 h5_url
+//
+//   - 支付宝 APP 返回 app_params（签名字符串）
+//
+//   - 支付宝 H5 / Page 返回 pay_url
 func handleCreateOrder(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	defer r.Body.Close()
+	defer func() {
+		if err := r.Body.Close(); err != nil {
+			log.Printf("close request body: %v", err)
+		}
+	}()
 
 	var req struct {
 		Channel   paymgr.Channel   `json:"channel"`
@@ -100,6 +114,8 @@ func handleCreateOrder(w http.ResponseWriter, r *http.Request) {
 		Amount    int64            `json:"amount"` // 分
 		Subject   string           `json:"subject"`
 		ReturnURL string           `json:"return_url"` // 支付宝同步跳转（可选）
+		ClientIP  string           `json:"client_ip"`  // 微信 H5 必填
+		OpenID    string           `json:"open_id"`    // 微信 JSAPI 必填
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
@@ -117,6 +133,8 @@ func handleCreateOrder(w http.ResponseWriter, r *http.Request) {
 		TradeType:   req.TradeType,
 		NotifyURL:   "https://yourdomain.com/api/v1/notify/" + string(req.Channel),
 		ReturnURL:   req.ReturnURL,
+		ClientIP:    req.ClientIP,
+		OpenID:      req.OpenID,
 		ExpireAt:    time.Now().Add(30 * time.Minute),
 		Metadata: map[string]string{
 			"order_id": outTradeNo,
@@ -135,8 +153,10 @@ func handleCreateOrder(w http.ResponseWriter, r *http.Request) {
 		"out_trade_no": outTradeNo,
 		"channel":      resp.Channel,
 		"app_params":   resp.AppParams, // APP 支付参数
-		"code_url":     resp.CodeURL,   // Native 扫码 URL（如果是扫码支付）
-		"pay_url":      resp.PayURL,    // 支付宝 H5 跳转 URL
+		"jsapi_params": resp.JSAPIParams,
+		"code_url":     resp.CodeURL, // Native 扫码 URL（如果是扫码支付）
+		"h5_url":       resp.H5URL,   // 微信 H5 拉起 URL
+		"pay_url":      resp.PayURL,  // 支付宝 H5 / PC 页面支付跳转 URL
 	})
 }
 
@@ -292,7 +312,11 @@ func handleWechatRefundNotify(w http.ResponseWriter, r *http.Request) {
 //	  "reason": "用户申请退款"
 //	}
 func handleRefund(w http.ResponseWriter, r *http.Request) {
-	defer r.Body.Close()
+	defer func() {
+		if err := r.Body.Close(); err != nil {
+			log.Printf("close request body: %v", err)
+		}
+	}()
 
 	var req struct {
 		Channel      paymgr.Channel `json:"channel"`

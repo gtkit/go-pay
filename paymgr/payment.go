@@ -30,6 +30,7 @@ const (
 	TradeTypeJSAPI  TradeType = "jsapi"  // 公众号/小程序支付
 	TradeTypeApp    TradeType = "app"    // APP 支付
 	TradeTypeH5     TradeType = "h5"     // 手机网页支付
+	TradeTypePage   TradeType = "page"   // PC 网页支付 / 支付宝收银台
 )
 
 // TradeStatus 交易状态.
