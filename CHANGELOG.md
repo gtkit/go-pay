@@ -6,6 +6,14 @@
 
 ### Added
 
+### Changed
+
+### Fixed
+
+## [v1.2.0] - 2026-04-24
+
+### Added
+
 - `wechat.Provider.UnifiedOrder` 新增对 `paymgr.TradeTypeJSAPI` 和 `paymgr.TradeTypeH5` 的支持，分别接入官方 `payments/jsapi` 与 `payments/h5`。
 - 微信 JSAPI 下单成功后返回 `UnifiedOrderResponse.JSAPIParams`，用于前端调起微信支付。
 - 微信 H5 下单成功后返回 `UnifiedOrderResponse.H5URL`，用于移动浏览器拉起支付。
@@ -17,6 +25,11 @@
 - 微信直连下单支持矩阵从 `app`、`native` 扩展为 `app`、`jsapi`、`native`、`h5`。
 - `example/main.go` 与 README 示例补充了微信 JSAPI/H5 的必填字段说明：JSAPI 需要 `OpenID`，H5 需要 `ClientIP`。
 - README 与示例新增支付宝 `page` 和聚合二维码编排说明，`pay_url` 字段语义扩展为支付宝 H5 / PC 页面支付跳转链接。
+
+### Fixed
+
+- `alipay.Provider.UnifiedOrder` 现为 `app`、`h5`、`page` 三种跳转/调起支付场景补齐 `product_code`，避免生成可签名但网关拒绝的请求。
+- `aggregate.Service.Resolve` 在需要真实下单时会显式校验 `Manager` 是否为空，避免调用方错误初始化时触发空指针 panic。
 
 ## [v1.1.0] - 2026-04-22
 
@@ -65,5 +78,6 @@ func (p *YourProvider) ParseRefundNotify(ctx context.Context, r *http.Request) (
 
 详见 `git log v1.0.3`。
 
+[v1.2.0]: https://github.com/gtkit/go-pay/releases/tag/v1.2.0
 [v1.1.0]: https://github.com/gtkit/go-pay/releases/tag/v1.1.0
 [v1.0.3]: https://github.com/gtkit/go-pay/releases/tag/v1.0.3
