@@ -167,6 +167,9 @@ func TestBuildTradePagePayMapsFields(t *testing.T) {
 	if trade.TotalAmount != "12.34" {
 		t.Fatalf("TotalAmount = %q, want %q", trade.TotalAmount, "12.34")
 	}
+	if trade.ProductCode != "FAST_INSTANT_TRADE_PAY" {
+		t.Fatalf("ProductCode = %q, want %q", trade.ProductCode, "FAST_INSTANT_TRADE_PAY")
+	}
 	if trade.NotifyURL != "https://api.example.com/notify/alipay" {
 		t.Fatalf("NotifyURL = %q, want %q", trade.NotifyURL, "https://api.example.com/notify/alipay")
 	}
@@ -219,10 +222,68 @@ func TestUnifiedOrderPageReturnsPayURL(t *testing.T) {
 	if !strings.Contains(bizContent, `"out_trade_no":"ORD-PAGE-1"`) {
 		t.Fatalf("biz_content = %q, want out_trade_no", bizContent)
 	}
+	if !strings.Contains(bizContent, `"product_code":"FAST_INSTANT_TRADE_PAY"`) {
+		t.Fatalf("biz_content = %q, want product_code", bizContent)
+	}
 	if !strings.Contains(bizContent, `"timeout_express":"25m"`) {
 		t.Fatalf("biz_content = %q, want timeout_express", bizContent)
 	}
 	if !strings.Contains(bizContent, `"passback_params":"order_id=ORD-PAGE-1"`) {
 		t.Fatalf("biz_content = %q, want passback_params", bizContent)
+	}
+}
+
+func TestUnifiedOrderH5ReturnsPayURLWithProductCode(t *testing.T) {
+	p := newSignedTestProvider(t)
+
+	resp, err := p.UnifiedOrder(t.Context(), &paymgr.UnifiedOrderRequest{
+		OutTradeNo:  "ORD-H5-1",
+		TotalAmount: 1234,
+		Subject:     "H5 order",
+		TradeType:   paymgr.TradeTypeH5,
+		NotifyURL:   "https://api.example.com/notify/alipay",
+		ReturnURL:   "https://www.example.com/pay/return",
+	})
+	if err != nil {
+		t.Fatalf("UnifiedOrder() error = %v", err)
+	}
+	if resp.PayURL == "" {
+		t.Fatal("PayURL = empty")
+	}
+
+	u, err := url.Parse(resp.PayURL)
+	if err != nil {
+		t.Fatalf("url.Parse() error = %v", err)
+	}
+
+	bizContent := u.Query().Get("biz_content")
+	if !strings.Contains(bizContent, `"product_code":"QUICK_WAP_WAY"`) {
+		t.Fatalf("biz_content = %q, want product_code", bizContent)
+	}
+}
+
+func TestUnifiedOrderAppReturnsAppParamsWithProductCode(t *testing.T) {
+	p := newSignedTestProvider(t)
+
+	resp, err := p.UnifiedOrder(t.Context(), &paymgr.UnifiedOrderRequest{
+		OutTradeNo:  "ORD-APP-1",
+		TotalAmount: 1234,
+		Subject:     "APP order",
+		TradeType:   paymgr.TradeTypeApp,
+		NotifyURL:   "https://api.example.com/notify/alipay",
+	})
+	if err != nil {
+		t.Fatalf("UnifiedOrder() error = %v", err)
+	}
+	if resp.AppParams == "" {
+		t.Fatal("AppParams = empty")
+	}
+	values, err := url.ParseQuery(resp.AppParams)
+	if err != nil {
+		t.Fatalf("url.ParseQuery() error = %v", err)
+	}
+	bizContent := values.Get("biz_content")
+	if !strings.Contains(bizContent, `"product_code":"QUICK_MSECURITY_PAY"`) {
+		t.Fatalf("biz_content = %q, want product_code", bizContent)
 	}
 }

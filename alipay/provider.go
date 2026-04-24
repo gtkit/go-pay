@@ -308,6 +308,7 @@ func (p *Provider) UnifiedOrder(ctx context.Context, req *paymgr.UnifiedOrderReq
 		trade.OutTradeNo = req.OutTradeNo
 		trade.TotalAmount = amount
 		trade.Subject = req.Subject
+		trade.ProductCode = "QUICK_MSECURITY_PAY"
 		trade.NotifyURL = req.NotifyURL
 		if timeoutExpress != "" {
 			trade.TimeoutExpress = timeoutExpress
@@ -329,6 +330,7 @@ func (p *Provider) UnifiedOrder(ctx context.Context, req *paymgr.UnifiedOrderReq
 		trade.OutTradeNo = req.OutTradeNo
 		trade.TotalAmount = amount
 		trade.Subject = req.Subject
+		trade.ProductCode = "QUICK_WAP_WAY"
 		trade.NotifyURL = req.NotifyURL
 		if req.ReturnURL != "" {
 			trade.ReturnURL = req.ReturnURL
@@ -641,6 +643,7 @@ func buildTradePagePay(req *paymgr.UnifiedOrderRequest, amount, timeoutExpress, 
 	trade.OutTradeNo = req.OutTradeNo
 	trade.TotalAmount = amount
 	trade.Subject = req.Subject
+	trade.ProductCode = "FAST_INSTANT_TRADE_PAY"
 	trade.NotifyURL = req.NotifyURL
 	if req.ReturnURL != "" {
 		trade.ReturnURL = req.ReturnURL

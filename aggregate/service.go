@@ -78,6 +78,9 @@ func (s *Service) Resolve(ctx context.Context, req *ResolveRequest) (*ResolveRes
 	if orderReq == nil {
 		return nil, fmt.Errorf("%w: build unified order returned nil request", paymgr.ErrInvalidParam)
 	}
+	if s == nil || s.mgr == nil {
+		return nil, fmt.Errorf("%w: aggregate service manager is required", paymgr.ErrInvalidParam)
+	}
 
 	orderReq.TradeType = tradeType
 	if env == EnvWechat && orderReq.OpenID == "" {
