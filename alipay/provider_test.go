@@ -18,6 +18,8 @@ import (
 	sdk "github.com/smartwalle/alipay/v3"
 )
 
+var _ paymgr.Provider = (*Provider)(nil)
+
 func TestCentToYuan(t *testing.T) {
 	tests := []struct {
 		name string

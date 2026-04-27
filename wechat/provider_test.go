@@ -18,6 +18,8 @@ import (
 	"github.com/wechatpay-apiv3/wechatpay-go/services/refunddomestic"
 )
 
+var _ paymgr.Provider = (*Provider)(nil)
+
 func TestParseTimeRFC3339(t *testing.T) {
 	input := "2023-06-08T10:34:56+08:00"
 	want, err := time.Parse(time.RFC3339, input)

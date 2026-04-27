@@ -81,6 +81,22 @@ paymgr.TradeTypePage   // PC 网页支付 / 支付宝收银台
 
 如果传入未实现的类型，会返回 `paymgr.ErrUnsupportedType`。
 
+### 3.3 下单字段与返回矩阵
+
+| 渠道 | 交易类型 | 适用场景 | 额外必填字段 | 重点返回字段 |
+| --- | --- | --- | --- | --- |
+| 微信支付 | `app` | 微信开放平台 APP 支付 | 无 | `AppParams` |
+| 微信支付 | `jsapi` | 公众号 / 小程序支付 | `OpenID` | `PrepayID`、`JSAPIParams` |
+| 微信支付 | `native` | PC 或收银台扫码支付 | 无 | `CodeURL` |
+| 微信支付 | `h5` | 移动浏览器 H5 支付 | `ClientIP` | `H5URL` |
+| 支付宝 | `app` | 支付宝 APP 支付 | 无 | `AppParams` |
+| 支付宝 | `jsapi` | 支付宝小程序支付 | 视业务传 `OpenID` 作为 `buyer_id` | `PrepayID` |
+| 支付宝 | `native` | 当面付扫码支付 | 无 | `CodeURL` |
+| 支付宝 | `h5` | 手机网站支付 | 建议传 `ReturnURL` | `PayURL` |
+| 支付宝 | `page` | PC 收银台页面支付 | 建议传 `ReturnURL` | `PayURL` |
+
+聚合二维码入口由 `aggregate.Service` 编排：微信环境走微信 `jsapi`，支付宝移动端走支付宝 `h5`，支付宝 PC 端走支付宝 `page`，普通浏览器需要业务页面先选择渠道。
+
 ## 4. 统一接入流程
 
 最典型的接入顺序如下：
@@ -513,7 +529,7 @@ type UnifiedOrderRequest struct {
 | `Subject` | 是 | 商品描述 |
 | `TradeType` | 视场景 | 交易类型 |
 | `NotifyURL` | 是 | 异步通知地址 |
-| `ReturnURL` | 否 | 支付宝 H5 / WAP 同步跳转地址 |
+| `ReturnURL` | 否 | 支付宝 H5 / PC 页面支付同步跳转地址 |
 | `ClientIP` | 某些渠道场景需要 | 用户 IP；微信 H5 必填 |
 | `OpenID` | 某些渠道场景需要 | 微信 JSAPI 或支付宝买家标识场景 |
 | `ExpireAt` | 否 | 订单过期时间 |
