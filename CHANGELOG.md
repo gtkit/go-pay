@@ -10,6 +10,18 @@
 
 ### Fixed
 
+## [v1.2.1] - 2026-04-27
+
+### Added
+
+- 新增 `aggregate` 包的 Example 测试和 Benchmark，用于展示聚合二维码编排的典型调用方式并记录核心路径性能基线。
+- 新增 `paymgr.Manager` 与 `Provider` 的契约测试，覆盖统一下单前置校验、未注册渠道、Provider 错误透传和响应返回行为。
+- 新增 GitHub Actions CI 门禁，自动运行 `go vet`、race 测试、coverage smoke 和 `golangci-lint`。
+
+### Changed
+
+- README 新增下单字段与返回矩阵，明确微信 / 支付宝各交易类型的额外必填字段和重点返回字段。
+
 ## [v1.2.0] - 2026-04-24
 
 ### Added
@@ -78,6 +90,7 @@ func (p *YourProvider) ParseRefundNotify(ctx context.Context, r *http.Request) (
 
 详见 `git log v1.0.3`。
 
+[v1.2.1]: https://github.com/gtkit/go-pay/releases/tag/v1.2.1
 [v1.2.0]: https://github.com/gtkit/go-pay/releases/tag/v1.2.0
 [v1.1.0]: https://github.com/gtkit/go-pay/releases/tag/v1.1.0
 [v1.0.3]: https://github.com/gtkit/go-pay/releases/tag/v1.0.3
