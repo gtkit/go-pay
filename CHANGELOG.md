@@ -10,6 +10,29 @@
 
 ### Fixed
 
+## [v1.4.0] - 2026-05-09
+
+### Changed
+
+- ⚠ 路线调整：支付宝底层 SDK 由 `github.com/go-pay/gopay/alipay/v3`（v1.3.x 短暂引入）切回 `github.com/smartwalle/alipay/v3 v3.2.29`。**理由**：核实后 smartwalle 仍在活跃维护，对本项目核心场景（下单 / 查询 / 退款 / 通知）覆盖完整；单 SDK 包尺寸约 4,000 行，比 v1.3.x 时的双 SDK 方案约 21,000 行更轻量，且 OpenAPI 1.0 协议本身原生支持公钥 / 公钥证书两种加签模式。
+- 渠道错误的原始错误来源回归 smartwalle 错误（`SubCode` / `SubMsg`），与 v1.2.x 一致；下游 `errors.Is(err, paymgr.ErrXxx)` / `errors.As(err, &chErr); chErr.Code == "ACQ.*"` 判断仍稳定。
+- README 第 7 章「支付宝配置」恢复证书模式 + 公钥模式两种说明；第 13 章「当前实现备注」更新底层 SDK 描述；第 15 章升级指南改写为 v1.4.0 路线调整说明。
+
+### Fixed
+
+- 恢复支付宝**普通公钥模式**（仅设置 `Config.AlipayPublicKey` 字段）支持。v1.3.x 时被软降级为 `paymgr.ErrNotSupported` 的配置在 v1.4.0 后正常初始化运行——下游公钥商户号无需切换证书模式即可继续工作。
+- 保留 v1.3.1 修复：JSAPI 下单（`TradeTypeJSAPI`）补齐 `product_code=JSAPI_PAY` 与 `op_app_id`（默认取主 AppID），避免支付宝网关返回「missing required parameter」。
+- 保留 v1.3.2 修复：`QueryRefund` 在退款单不存在时（支付宝返回 200 + `out_request_no` 为空）显式返回 `paymgr.ErrOrderNotFound`，避免下游收到空响应误判。
+
+### Removed
+
+- `paymgr.ErrNotSupported` 不再用于支付宝公钥模式软降级（公钥模式现已恢复支持，调用 `NewProvider(WithAlipayPublicKey(...))` 不再返回此错误）。
+
+### Notes
+
+- `paymgr.ChannelWechatV2` 常量保留为微信 V2 协议扩展点占位（v1.3.0 引入，与底层 SDK 选型无关；业务方按需自行实装 V2 provider）。
+- 工具集 `tools/sandbox-verify/` `tools/notify-listener/` `tools/sandbox-refund/` 保留——未来 SDK 升级回归仍可重用；`sandbox-verify` 的 `raw_public_key_soft_degradation` 检查项改名为 `raw_public_key_mode_works` 并调整为「期望成功」语义。
+
 ## [v1.3.2] - 2026-05-09
 
 ### Fixed
@@ -118,6 +141,7 @@ func (p *YourProvider) ParseRefundNotify(ctx context.Context, r *http.Request) (
 
 详见 `git log v1.0.3`。
 
+[v1.4.0]: https://github.com/gtkit/go-pay/releases/tag/v1.4.0
 [v1.3.2]: https://github.com/gtkit/go-pay/releases/tag/v1.3.2
 [v1.3.1]: https://github.com/gtkit/go-pay/releases/tag/v1.3.1
 [v1.3.0]: https://github.com/gtkit/go-pay/releases/tag/v1.3.0

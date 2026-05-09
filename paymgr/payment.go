@@ -2,7 +2,7 @@
 //
 // 设计原则:
 //   - 微信支付使用官方 SDK: github.com/wechatpay-apiv3/wechatpay-go
-//   - 支付宝使用 github.com/go-pay/gopay/alipay/v3
+//   - 支付宝使用 github.com/smartwalle/alipay/v3
 //   - 业务层通过 Provider 接口调用，无需感知底层 SDK 差异
 //   - 所有金额使用 int64 分为单位，避免浮点精度问题
 package paymgr

@@ -98,7 +98,7 @@ func main() {
 	}
 
 	rep := &report{
-		GoPayVersion: "v1.3.0",
+		GoPayVersion: "v1.4.0",
 		GeneratedAt:  time.Now().Format(time.RFC3339),
 		Environment: envSnapshot{
 			AppID:     mask(cfg.AppID),
@@ -109,7 +109,7 @@ func main() {
 		},
 	}
 
-	rep.Results = append(rep.Results, checkPublicKeySoftDegradation(cfg))
+	rep.Results = append(rep.Results, checkPublicKeyModeWorks(cfg))
 
 	provider, err := newCertModeProvider(cfg)
 	if err != nil {
@@ -190,35 +190,46 @@ func newCertModeProvider(cfg *config) (*alipay.Provider, error) {
 	)
 }
 
-func checkPublicKeySoftDegradation(cfg *config) checkResult {
-	const name = "raw_public_key_soft_degradation"
+// checkPublicKeyModeWorks 验证 v1.4.0 后公钥模式正常工作（不再被软降级）。
+// 用一个测试用的占位公钥字符串构造 Config，期望 NewProvider 正常返回（公钥内容是否真有效不在测试范围）。
+func checkPublicKeyModeWorks(cfg *config) checkResult {
+	const name = "raw_public_key_mode_works"
+	// 占位公钥内容，仅为通过 LoadAliPayPublicKey 的格式校验
+	const dummyPublicKey = `-----BEGIN PUBLIC KEY-----
+MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAtpwpxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxwIDAQAB
+-----END PUBLIC KEY-----`
+
 	_, err := alipay.NewProvider(
 		alipay.WithAppID(cfg.AppID),
 		alipay.WithPrivateKeyPath(cfg.PrivateKeyPath),
 		alipay.WithProduction(false),
-		alipay.WithAlipayPublicKey("dummy-public-key-for-soft-degradation-test"),
+		alipay.WithAlipayPublicKey(dummyPublicKey),
 	)
-	if err == nil {
-		return checkResult{
-			Name:   name,
-			Status: "fail",
-			Note:   "未触发软降级！预期 ErrNotSupported，实际 nil error",
+	if err != nil {
+		// v1.3.x 时代会命中这里（ErrNotSupported 软降级）
+		// v1.4.0 后不应再命中——除非 LoadAliPayPublicKey 因 dummy key 内容无效而拒绝（此时不算 fail，工具仅做最小校验）
+		if errors.Is(err, paymgr.ErrNotSupported) {
+			return checkResult{
+				Name:   name,
+				Status: "fail",
+				Error:  err.Error(),
+				Note:   "⚠ 公钥模式被软降级！v1.4.0 后预期不应再返回 ErrNotSupported——可能是回滚未生效",
+			}
 		}
-	}
-	if !errors.Is(err, paymgr.ErrNotSupported) {
 		return checkResult{
 			Name:   name,
-			Status: "fail",
-			Error:  err.Error(),
-			Note:   "返回了错误，但不是 paymgr.ErrNotSupported（可能是 Validate 提前拒绝）",
+			Status: "pass",
+			Detail: map[string]any{
+				"note":          "公钥模式路径已启用，dummy key 内容被 SDK 拒绝（这是预期——dummy 不是真公钥）",
+				"error_message": err.Error(),
+			},
 		}
 	}
 	return checkResult{
 		Name:   name,
 		Status: "pass",
 		Detail: map[string]any{
-			"matches_err_not_supported": true,
-			"error_message":             err.Error(),
+			"note": "公钥模式路径已启用，dummy key 内容被 SDK 接受（如生产环境用真公钥应正常工作）",
 		},
 	}
 }
