@@ -49,3 +49,17 @@ func TestUnifiedOrderValidateAllowsTradeTypePage(t *testing.T) {
 		t.Fatalf("Validate() error = %v, want nil", err)
 	}
 }
+
+func TestChannelWechatV2ConstantUniqueAndTyped(t *testing.T) {
+	if ChannelWechatV2 != "wxpayv2" {
+		t.Fatalf("ChannelWechatV2 = %q, want %q", ChannelWechatV2, "wxpayv2")
+	}
+	channels := map[Channel]string{
+		ChannelWechat:   "ChannelWechat",
+		ChannelAlipay:   "ChannelAlipay",
+		ChannelWechatV2: "ChannelWechatV2",
+	}
+	if len(channels) != 3 {
+		t.Fatalf("channel constants collide: %+v", channels)
+	}
+}

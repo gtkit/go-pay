@@ -1,15 +1,18 @@
 # go-pay
 
-`go-pay` 是一个 Go 支付聚合库，统一封装了微信支付和支付宝的常见能力，对业务层暴露一致的接口。
+`go-pay` 是一个 Go 支付**业务统一抽象层**——在官方/主流 SDK 之上提供渠道无关的统一下单、查询、退款、通知 API，附带 Channel 注册路由与聚合二维码编排能力。它**不是 SDK 的薄包装**，而是把多家支付渠道的差异收敛在 provider 层，让业务代码只面向统一接口。
+
+底层 SDK 选型（自 v1.3.0）：
+
+- 微信支付：[`github.com/wechatpay-apiv3/wechatpay-go`](https://github.com/wechatpay-apiv3/wechatpay-go)（腾讯官方 V3 SDK）
+- 支付宝：[`github.com/go-pay/gopay/alipay/v3`](https://github.com/go-pay/gopay)（覆盖最广的 Go 支付 SDK，支持支付宝 OpenAPI v3 RESTful 协议 + 必要的 1.0 网关方法）
 
 当前提供的核心能力：
 
-- 统一下单
-- 订单查询
-- 关闭订单
-- 退款
-- 退款查询（v1.1.0+）
+- 统一下单 / 订单查询 / 关闭订单
+- 退款 / 退款查询（v1.1.0+）
 - 异步通知解析与应答（含退款通知，v1.1.0+）
+- 聚合二维码编排（v1.2.0+）
 
 项目内部通过 `paymgr.Manager` 管理不同支付渠道，业务方只需要：
 
@@ -17,9 +20,12 @@
 2. 注册到 `Manager`
 3. 按渠道调用统一方法
 
+> **升级到 v1.3.0 注意**：支付宝底层 SDK 已切换为 `go-pay/gopay/alipay/v3`，下游公开 API（`alipay.NewProvider` / `alipay.Config` / `alipay.WithXxx`）签名 100% 不变；仅 **支付宝普通公钥模式**（仅设置 `AlipayPublicKey` 字段）在运行时会返回 `paymgr.ErrNotSupported`——v3 协议只支持证书模式，请改用 `WithCertMode` / `WithCertModePaths`。同时新增 `paymgr.ChannelWechatV2` 常量作为微信 V2 协议扩展点占位（仅常量，不实装 V2 provider），详见第 14 章升级指南。
+>
 > **升级到 v1.1.0 注意**：`paymgr.Provider` 接口新增 `QueryRefund` 和 `ParseRefundNotify` 两个方法。
 > 官方 `alipay` / `wechat` 两个实现已就位，但若你在项目里自定义实现过 `Provider`，升级后会编译失败，需要补齐这两个方法。
-> 详细变更见 [CHANGELOG.md](./CHANGELOG.md)。
+>
+> 完整变更见 [CHANGELOG.md](./CHANGELOG.md)。
 
 ## 1. 安装
 
@@ -58,8 +64,9 @@ go get github.com/gtkit/go-pay
 在代码里使用以下常量：
 
 ```go
-paymgr.ChannelWechat // 值为 "wxpay"
-paymgr.ChannelAlipay // 值为 "alipay"
+paymgr.ChannelWechat   // 值为 "wxpay"      微信 V3
+paymgr.ChannelAlipay   // 值为 "alipay"     支付宝
+paymgr.ChannelWechatV2 // 值为 "wxpayv2"    微信 V2 扩展点占位（v1.3.0+，本库未实装；调用方按需自行实现 paymgr.Provider 接口）
 ```
 
 ### 3.2 交易类型
@@ -335,7 +342,7 @@ provider, err := alipay.NewProvider(
 | `alipay.WithPrivateKeyPath(path)` | 通过文件路径设置应用私钥 |
 | `alipay.WithCertMode(appCert, rootCert, alipayCert)` | 通过证书内容启用证书模式 |
 | `alipay.WithCertModePaths(appCertPath, rootCertPath, alipayCertPath)` | 通过证书路径启用证书模式 |
-| `alipay.WithAlipayPublicKey(publicKey)` | 使用普通公钥模式 |
+| `alipay.WithAlipayPublicKey(publicKey)` | ⚠ 自 v1.3.0 起软降级——v3 协议只支持证书模式，调用方实际初始化时会返回 `paymgr.ErrNotSupported`。Option 函数与 `Config.AlipayPublicKey` 字段保留仅用于编译兼容，请使用证书模式。 |
 
 ### 7.2 必填信息
 
@@ -344,14 +351,16 @@ provider, err := alipay.NewProvider(
 | `AppID` | 是 | 支付宝应用 ID |
 | `PrivateKey` 或 `PrivateKeyPath` | 是 | 应用私钥内容或文件路径 |
 | `IsProduction` | 是 | `true` 生产，`false` 沙箱 |
-| 证书模式三件套 | 证书模式必填 | 应用公钥证书、支付宝根证书、支付宝公钥证书 |
-| `AlipayPublicKey` | 普通公钥模式必填 | 当不使用证书模式时必填 |
+| 证书模式三件套 | 是 | 应用公钥证书、支付宝根证书、支付宝公钥证书（自 v1.3.0 起为唯一支持模式） |
+| ~~`AlipayPublicKey`~~ | ⚠ 已废弃 | v1.3.0 软降级——见第 7.3.2 节 |
 
-### 7.3 两种配置模式
+### 7.3 配置模式
 
-#### 方式一：证书模式
+#### 7.3.1 证书模式（自 v1.3.0 起为唯一支持模式）
 
-推荐使用证书模式。只要应用公钥证书、支付宝根证书、支付宝公钥证书三项都提供，就会走证书模式。
+支付宝 OpenAPI v3 协议要求使用证书计算 `cert_sn` 序列号，因此自 v1.3.0 起本库**仅支持证书模式**。只要应用公钥证书、支付宝根证书、支付宝公钥证书三项都提供，就会走证书模式。
+
+证书在支付宝商户后台「开发设置 → 接口加签方式（公钥证书）」处生成下载。
 
 示例：
 
@@ -361,9 +370,9 @@ alipayProvider, err := alipay.NewProvider(
 	alipay.WithPrivateKeyPath(cfg.Pay.Alipay.PrivateKeyPath),
 	alipay.WithProduction(true),
 	alipay.WithCertModePaths(
-		cfg.Pay.Alipay.AppCertPublicKeyPath,
-		cfg.Pay.Alipay.AlipayRootCertPath,
-		cfg.Pay.Alipay.AlipayCertPublicKeyPath,
+		cfg.Pay.Alipay.AppCertPublicKeyPath,    // 应用公钥证书
+		cfg.Pay.Alipay.AlipayRootCertPath,      // 支付宝根证书
+		cfg.Pay.Alipay.AlipayCertPublicKeyPath, // 支付宝公钥证书
 	),
 )
 if err != nil {
@@ -371,25 +380,41 @@ if err != nil {
 }
 ```
 
-#### 方式二：普通公钥模式
+#### 7.3.2 ⚠ 普通公钥模式（v1.3.0 已废弃）
 
-如果不使用证书模式，则必须提供 `AlipayPublicKey`：
+**自 v1.3.0 起，普通公钥模式不再支持。**
+
+历史背景：v1.2.x 及更早版本基于 `smartwalle/alipay/v3` 实现，支持「仅设置 `AlipayPublicKey`」的普通公钥模式。v1.3.0 切换到 `go-pay/gopay/alipay/v3`，因为支付宝 OpenAPI v3 协议要求用证书计算 `cert_sn`，普通公钥模式无法生成 sn，**协议级别就不再支持**。
+
+`alipay.WithAlipayPublicKey(...)` Option 与 `Config.AlipayPublicKey` 字段**保留仅用于编译兼容**——下游代码不需要改字面量。但运行时初始化（`NewProvider` / `NewProviderWithConfig`）会返回包装了 `paymgr.ErrNotSupported` 的错误，文案明确指引升级到证书模式：
 
 ```go
-alipayProvider, err := alipay.NewProvider(
-	alipay.WithAppID(cfg.Pay.Alipay.AppID),
-	alipay.WithPrivateKeyPath(cfg.Pay.Alipay.PrivateKeyPath),
-	alipay.WithProduction(false),
-	alipay.WithAlipayPublicKey(cfg.Pay.Alipay.AlipayPublicKey),
+_, err := alipay.NewProvider(
+	alipay.WithAppID(...),
+	alipay.WithPrivateKeyPath(...),
+	alipay.WithAlipayPublicKey(...), // 仅这一个 Option，无证书 → 软降级
 )
-if err != nil {
-	return fmt.Errorf("init alipay provider: %w", err)
-}
+// err 满足：errors.Is(err, paymgr.ErrNotSupported) == true
+// err.Error() 含 "alipay raw public key mode is not supported by gopay v3 SDK; please switch to certificate mode via WithCertMode / WithCertModePaths"
+```
+
+**升级方法**：到支付宝商户后台下载三个证书，把 `WithAlipayPublicKey` 改为 `WithCertModePaths`：
+
+```go
+// 改前（v1.2.x）
+alipay.WithAlipayPublicKey(cfg.Pay.Alipay.AlipayPublicKey)
+
+// 改后（v1.3.0）
+alipay.WithCertModePaths(
+	cfg.Pay.Alipay.AppCertPublicKeyPath,
+	cfg.Pay.Alipay.AlipayRootCertPath,
+	cfg.Pay.Alipay.AlipayCertPublicKeyPath,
+)
 ```
 
 ### 7.4 兼容方式：结构体配置
 
-如果你希望继续使用结构体，也可以：
+如果你希望继续使用结构体，也可以（注意：`AlipayPublicKey` 字段保留仅用于编译兼容，运行时不参与初始化，请务必填写证书三件套）：
 
 ```go
 alipayProvider, err := alipay.NewProvider(&alipay.Config{
@@ -399,7 +424,6 @@ alipayProvider, err := alipay.NewProvider(&alipay.Config{
 	AppCertPublicKeyPath:    cfg.Pay.Alipay.AppCertPublicKeyPath,
 	AlipayRootCertPath:      cfg.Pay.Alipay.AlipayRootCertPath,
 	AlipayCertPublicKeyPath: cfg.Pay.Alipay.AlipayCertPublicKeyPath,
-	AlipayPublicKey:         cfg.Pay.Alipay.AlipayPublicKey,
 })
 ```
 
@@ -1151,11 +1175,109 @@ if errors.As(err, &chErr) {
 
 在接入前建议先了解当前代码边界：
 
+- **底层 SDK**：微信使用腾讯官方 `wechatpay-apiv3/wechatpay-go`（V3 协议），支付宝使用 `go-pay/gopay/alipay/v3`（v3 RESTful + 必要的 1.0 网关方法，由 SDK 内部协议适配，对外能力完整）
 - 微信 Provider 当前覆盖 `app`、`jsapi`、`native`、`h5` 四种直连下单场景
-- 当前推荐用函数选项模式初始化，结构体配置作为兼容方式保留
+- 支付宝 Provider 覆盖 `app`、`jsapi`、`native`、`h5`、`page` 五种场景
+- 推荐用函数选项模式初始化，结构体配置作为兼容方式保留
+- 支付宝**仅支持证书模式**，普通公钥模式自 v1.3.0 起软降级（详见 7.3.2）
+- 微信目前**仅支持 V3** 协议；如需 V2 商户号兼容，业务方可自行实现 `paymgr.Provider` 接口注册到 manager（详见第 14 章扩展点）
 - 示例代码展示的是接入方式，不是可直接上线的完整业务代码
 
 如果你要在自己的业务项目中使用，通常下一步会做两件事：
 
 1. 把证书、密钥、回调地址抽到你自己的配置系统里
 2. 在订单服务里封装一层业务适配，把 `go-pay` 的统一请求/响应转换成你自己的领域对象
+
+## 14. 微信 V2 接入扩展点
+
+本库**不实装**微信 V2 协议（YAGNI 原则——V2 是微信维护期协议，新接入应使用 V3）。但 `paymgr` 暴露了 `ChannelWechatV2` 常量作为扩展点占位，业务方如有 V2 商户号需求，可在自己的项目里实现 `paymgr.Provider` 接口并注册到 manager。
+
+骨架示例：
+
+```go
+package mywechatv2
+
+import (
+	"context"
+	"net/http"
+
+	"github.com/gtkit/go-pay/paymgr"
+)
+
+// MyV2Provider 实现 paymgr.Provider 接口对接微信 V2 协议。
+// 推荐底层使用 github.com/go-pay/gopay/wechat（V2 子包，内置 ParseNotify / VerifySign 等）。
+type MyV2Provider struct {
+	// ... 商户号、APIKey 等
+}
+
+func (p *MyV2Provider) Channel() paymgr.Channel { return paymgr.ChannelWechatV2 }
+
+func (p *MyV2Provider) UnifiedOrder(ctx context.Context, req *paymgr.UnifiedOrderRequest) (*paymgr.UnifiedOrderResponse, error) {
+	// 调用 gopay/wechat（V2）的 UnifiedOrder
+	return nil, nil
+}
+
+func (p *MyV2Provider) QueryOrder(ctx context.Context, req *paymgr.QueryOrderRequest) (*paymgr.QueryOrderResponse, error) { return nil, nil }
+func (p *MyV2Provider) CloseOrder(ctx context.Context, req *paymgr.CloseOrderRequest) error                                  { return nil }
+func (p *MyV2Provider) Refund(ctx context.Context, req *paymgr.RefundRequest) (*paymgr.RefundResponse, error)               { return nil, nil }
+func (p *MyV2Provider) QueryRefund(ctx context.Context, req *paymgr.QueryRefundRequest) (*paymgr.QueryRefundResponse, error){ return nil, nil }
+func (p *MyV2Provider) ParseNotify(ctx context.Context, r *http.Request) (*paymgr.NotifyResult, error)                       { return nil, nil }
+func (p *MyV2Provider) ParseRefundNotify(ctx context.Context, r *http.Request) (*paymgr.RefundNotifyResult, error)           { return nil, nil }
+func (p *MyV2Provider) ACKNotify(w http.ResponseWriter)                                                                       {}
+```
+
+注册到 manager：
+
+```go
+mgr.Register(&mywechatv2.MyV2Provider{...})
+// 之后 mgr.UnifiedOrder(ctx, paymgr.ChannelWechatV2, req) 会路由到该 provider
+```
+
+为什么不预先实装：
+- V2 是微信维护期协议，**新接入应使用 V3**；微信不再为 V2 增加新功能
+- 同时维护 V2 和 V3 双栈会扩大库的导出面积与测试矩阵，违反「导出面能小则小」原则
+- 业务方如有 V2 商户号，自己实装 1 个独立 provider（约 100-200 行代码）即可，本库通过接口扩展点已留好对接位
+
+## 15. v1.3.0 升级指南
+
+### 15.1 代码层：99% 不需要改
+
+下游公开 API **形状 100% 不变**：
+
+| API | 是否需要改 |
+|---|---|
+| `alipay.NewProvider(opts...)` 各种 `WithXxx(...)` 调用 | ✅ 不改 |
+| `alipay.NewProviderWithConfig(&alipay.Config{...})` | ✅ 不改 |
+| `paymgr.UnifiedOrder` / `QueryOrder` / `CloseOrder` / `Refund` / `QueryRefund` / `ParseNotify` / `ACKNotify` / `ParseRefundNotify` | ✅ 不改 |
+| `errors.Is(err, paymgr.ErrXxx)` 等错误判断 | ✅ 不改 |
+| `aggregate.Service.Resolve(...)` | ✅ 不改 |
+
+### 15.2 平台侧：可能需在支付宝商户后台确认
+
+- v3 协议要求**证书模式**，请确认商户后台「开发设置 → 接口加签方式」已选择「公钥证书」并下载三个证书：应用公钥证书、支付宝根证书、支付宝公钥证书
+- 把这三个证书路径配置到 `WithCertModePaths(...)`
+
+### 15.3 少数情况要改
+
+#### 情况 A：使用了普通公钥模式
+
+如果原配置仅设置了 `AlipayPublicKey`（未提供证书），运行时会得到 `paymgr.ErrNotSupported` 错误。**改为证书模式**（见 7.3.1）。
+
+#### 情况 B：对错误文案做了字符串匹配
+
+底层 SDK 切换后，渠道错误的原始错误来源从 smartwalle 错误变为 gopay v3 `ErrResponse`，错误文案格式可能略有差异。**改前后对比**：
+
+```go
+// ❌ 改前（脆弱写法）
+if strings.Contains(err.Error(), "ACQ.SYSTEM_ERROR") { ... }
+
+// ✅ 改后（结构化写法，永远稳定）
+var chErr *paymgr.ChannelError
+if errors.As(err, &chErr) && chErr.Code == "ACQ.SYSTEM_ERROR" {
+	// ...
+}
+```
+
+### 15.4 微信 V2 兼容（可选）
+
+新增 `paymgr.ChannelWechatV2` 常量。**仅当你有 V2 商户号需求**才需要按第 14 章扩展点接入；否则忽略即可。

@@ -2,20 +2,17 @@ package alipay
 
 import (
 	"context"
-	"crypto/rand"
-	"crypto/rsa"
-	"crypto/x509"
-	"encoding/pem"
 	"errors"
 	"maps"
 	"math"
+	"net/http/httptest"
 	"net/url"
-	"strings"
+	"os"
+	"path/filepath"
 	"testing"
-	"time"
 
+	alipayv3 "github.com/go-pay/gopay/alipay/v3"
 	"github.com/gtkit/go-pay/paymgr"
-	sdk "github.com/smartwalle/alipay/v3"
 )
 
 var _ paymgr.Provider = (*Provider)(nil)
@@ -119,6 +116,22 @@ func TestMapAlipayRefundStatus(t *testing.T) {
 	}
 }
 
+func TestMapAlipayTradeStatus(t *testing.T) {
+	tests := map[string]paymgr.TradeStatus{
+		"WAIT_BUYER_PAY": paymgr.TradeStatusPending,
+		"TRADE_SUCCESS":  paymgr.TradeStatusPaid,
+		"TRADE_FINISHED": paymgr.TradeStatusPaid,
+		"TRADE_CLOSED":   paymgr.TradeStatusClosed,
+		"":               paymgr.TradeStatusError,
+		"UNKNOWN":        paymgr.TradeStatusError,
+	}
+	for in, want := range tests {
+		if got := mapAlipayTradeStatus(in); got != want {
+			t.Fatalf("mapAlipayTradeStatus(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
 func TestParseRefundNotifyReturnsNotSupported(t *testing.T) {
 	p := &Provider{}
 	_, err := p.ParseRefundNotify(context.Background(), nil)
@@ -130,162 +143,197 @@ func TestParseRefundNotifyReturnsNotSupported(t *testing.T) {
 	}
 }
 
-func newSignedTestProvider(t *testing.T) *Provider {
-	t.Helper()
+func TestACKNotifyWritesSuccess(t *testing.T) {
+	p := &Provider{}
+	w := httptest.NewRecorder()
+	p.ACKNotify(w)
 
-	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		t.Fatalf("GenerateKey() error = %v", err)
+	if got := w.Code; got != 200 {
+		t.Fatalf("ACKNotify status = %d, want 200", got)
 	}
-	der, err := x509.MarshalPKCS8PrivateKey(privateKey)
-	if err != nil {
-		t.Fatalf("MarshalPKCS8PrivateKey() error = %v", err)
-	}
-	pemBytes := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der})
-
-	client, err := sdk.New("2021000000000001", string(pemBytes), false)
-	if err != nil {
-		t.Fatalf("sdk.New() error = %v", err)
-	}
-
-	return &Provider{
-		client: client,
-		cfg:    &Config{AppID: "2021000000000001"},
+	if got := w.Body.String(); got != "success" {
+		t.Fatalf("ACKNotify body = %q, want %q", got, "success")
 	}
 }
 
-func TestBuildTradePagePayMapsFields(t *testing.T) {
-	trade := buildTradePagePay(&paymgr.UnifiedOrderRequest{
-		OutTradeNo:  "ORD-PAGE-1",
-		TotalAmount: 1234,
-		Subject:     "PC page order",
-		NotifyURL:   "https://api.example.com/notify/alipay",
-		ReturnURL:   "https://www.example.com/pay/return",
-	}, "12.34", "25m", "order_id=ORD-PAGE-1")
-
-	if trade.OutTradeNo != "ORD-PAGE-1" {
-		t.Fatalf("OutTradeNo = %q, want %q", trade.OutTradeNo, "ORD-PAGE-1")
+// TestNewProviderRawPublicKeyOnlyReturnsErrNotSupported 验证「Option 路径下普通公钥模式软降级」。
+// gopay v3 SDK 不支持普通公钥模式，NewProvider 应返回 ErrNotSupported 包装错误，
+// 文案指引调用方升级到证书模式。
+func TestNewProviderRawPublicKeyOnlyReturnsErrNotSupported(t *testing.T) {
+	_, err := NewProvider(
+		WithAppID("2021000000000001"),
+		WithPrivateKey("dummy-private-key-pem-content"),
+		WithAlipayPublicKey("dummy-alipay-public-key-pem-content"),
+	)
+	if err == nil {
+		t.Fatal("NewProvider returned nil error for raw public key mode")
 	}
-	if trade.TotalAmount != "12.34" {
-		t.Fatalf("TotalAmount = %q, want %q", trade.TotalAmount, "12.34")
-	}
-	if trade.ProductCode != "FAST_INSTANT_TRADE_PAY" {
-		t.Fatalf("ProductCode = %q, want %q", trade.ProductCode, "FAST_INSTANT_TRADE_PAY")
-	}
-	if trade.NotifyURL != "https://api.example.com/notify/alipay" {
-		t.Fatalf("NotifyURL = %q, want %q", trade.NotifyURL, "https://api.example.com/notify/alipay")
-	}
-	if trade.ReturnURL != "https://www.example.com/pay/return" {
-		t.Fatalf("ReturnURL = %q, want %q", trade.ReturnURL, "https://www.example.com/pay/return")
-	}
-	if trade.TimeoutExpress != "25m" {
-		t.Fatalf("TimeoutExpress = %q, want %q", trade.TimeoutExpress, "25m")
-	}
-	if trade.PassbackParams != "order_id=ORD-PAGE-1" {
-		t.Fatalf("PassbackParams = %q, want %q", trade.PassbackParams, "order_id=ORD-PAGE-1")
+	if !errors.Is(err, paymgr.ErrNotSupported) {
+		t.Fatalf("NewProvider err = %v, want errors.Is(err, paymgr.ErrNotSupported)", err)
 	}
 }
 
-func TestUnifiedOrderPageReturnsPayURL(t *testing.T) {
-	p := newSignedTestProvider(t)
-
-	resp, err := p.UnifiedOrder(t.Context(), &paymgr.UnifiedOrderRequest{
-		OutTradeNo:  "ORD-PAGE-1",
-		TotalAmount: 1234,
-		Subject:     "PC page order",
-		TradeType:   paymgr.TradeTypePage,
-		NotifyURL:   "https://api.example.com/notify/alipay",
-		ReturnURL:   "https://www.example.com/pay/return",
-		ExpireAt:    time.Now().Add(25*time.Minute + 10*time.Second),
-		Metadata: map[string]string{
-			"order_id": "ORD-PAGE-1",
-		},
+// TestNewProviderWithConfigRawPublicKeyOnlyReturnsErrNotSupported 验证「Config struct 路径下普通公钥模式软降级」。
+func TestNewProviderWithConfigRawPublicKeyOnlyReturnsErrNotSupported(t *testing.T) {
+	_, err := NewProviderWithConfig(&Config{
+		AppID:           "2021000000000001",
+		PrivateKey:      "dummy-private-key-pem-content",
+		AlipayPublicKey: "dummy-alipay-public-key-pem-content",
 	})
-	if err != nil {
-		t.Fatalf("UnifiedOrder() error = %v", err)
+	if err == nil {
+		t.Fatal("NewProviderWithConfig returned nil error for raw public key mode")
 	}
-	if resp.PayURL == "" {
-		t.Fatal("PayURL = empty")
-	}
-
-	u, err := url.Parse(resp.PayURL)
-	if err != nil {
-		t.Fatalf("url.Parse() error = %v", err)
-	}
-
-	values := u.Query()
-	if got := values.Get("method"); got != "alipay.trade.page.pay" {
-		t.Fatalf("method = %q, want %q", got, "alipay.trade.page.pay")
-	}
-	if got := values.Get("return_url"); got != "https://www.example.com/pay/return" {
-		t.Fatalf("return_url = %q, want %q", got, "https://www.example.com/pay/return")
-	}
-	bizContent := values.Get("biz_content")
-	if !strings.Contains(bizContent, `"out_trade_no":"ORD-PAGE-1"`) {
-		t.Fatalf("biz_content = %q, want out_trade_no", bizContent)
-	}
-	if !strings.Contains(bizContent, `"product_code":"FAST_INSTANT_TRADE_PAY"`) {
-		t.Fatalf("biz_content = %q, want product_code", bizContent)
-	}
-	if !strings.Contains(bizContent, `"timeout_express":"25m"`) {
-		t.Fatalf("biz_content = %q, want timeout_express", bizContent)
-	}
-	if !strings.Contains(bizContent, `"passback_params":"order_id=ORD-PAGE-1"`) {
-		t.Fatalf("biz_content = %q, want passback_params", bizContent)
+	if !errors.Is(err, paymgr.ErrNotSupported) {
+		t.Fatalf("NewProviderWithConfig err = %v, want errors.Is(err, paymgr.ErrNotSupported)", err)
 	}
 }
 
-func TestUnifiedOrderH5ReturnsPayURLWithProductCode(t *testing.T) {
-	p := newSignedTestProvider(t)
-
-	resp, err := p.UnifiedOrder(t.Context(), &paymgr.UnifiedOrderRequest{
-		OutTradeNo:  "ORD-H5-1",
-		TotalAmount: 1234,
-		Subject:     "H5 order",
-		TradeType:   paymgr.TradeTypeH5,
-		NotifyURL:   "https://api.example.com/notify/alipay",
-		ReturnURL:   "https://www.example.com/pay/return",
-	})
-	if err != nil {
-		t.Fatalf("UnifiedOrder() error = %v", err)
-	}
-	if resp.PayURL == "" {
-		t.Fatal("PayURL = empty")
-	}
-
-	u, err := url.Parse(resp.PayURL)
-	if err != nil {
-		t.Fatalf("url.Parse() error = %v", err)
-	}
-
-	bizContent := u.Query().Get("biz_content")
-	if !strings.Contains(bizContent, `"product_code":"QUICK_WAP_WAY"`) {
-		t.Fatalf("biz_content = %q, want product_code", bizContent)
+func TestProviderChannelReturnsAlipay(t *testing.T) {
+	p := &Provider{}
+	if got := p.Channel(); got != paymgr.ChannelAlipay {
+		t.Fatalf("Channel() = %q, want %q", got, paymgr.ChannelAlipay)
 	}
 }
 
-func TestUnifiedOrderAppReturnsAppParamsWithProductCode(t *testing.T) {
-	p := newSignedTestProvider(t)
+func TestBuildAlipayCommonBodyMapsAllFields(t *testing.T) {
+	bm := buildAlipayCommonBody(&paymgr.UnifiedOrderRequest{
+		OutTradeNo: "ORD-1",
+		Subject:    "iPhone 16",
+		NotifyURL:  "https://api.example.com/notify",
+	}, "12.34", "25m", "order_id=ORD-1")
 
-	resp, err := p.UnifiedOrder(t.Context(), &paymgr.UnifiedOrderRequest{
-		OutTradeNo:  "ORD-APP-1",
-		TotalAmount: 1234,
-		Subject:     "APP order",
-		TradeType:   paymgr.TradeTypeApp,
-		NotifyURL:   "https://api.example.com/notify/alipay",
+	cases := map[string]string{
+		"out_trade_no":    "ORD-1",
+		"total_amount":    "12.34",
+		"subject":         "iPhone 16",
+		"notify_url":      "https://api.example.com/notify",
+		"timeout_express": "25m",
+		"passback_params": "order_id=ORD-1",
+	}
+	for key, want := range cases {
+		if got := bm.GetString(key); got != want {
+			t.Fatalf("bm[%q] = %q, want %q", key, got, want)
+		}
+	}
+}
+
+func TestBuildAlipayCommonBodyOmitsEmptyOptionalFields(t *testing.T) {
+	bm := buildAlipayCommonBody(&paymgr.UnifiedOrderRequest{
+		OutTradeNo: "ORD-2",
+		Subject:    "test",
+	}, "1.00", "", "")
+
+	for _, key := range []string{"notify_url", "timeout_express", "passback_params"} {
+		if got := bm.GetString(key); got != "" {
+			t.Fatalf("bm[%q] = %q, want empty (optional field)", key, got)
+		}
+	}
+}
+
+func TestAliRspErrorReturnsNilOn200(t *testing.T) {
+	if err := aliRspError(200, alipayv3.ErrResponse{}); err != nil {
+		t.Fatalf("aliRspError(200) = %v, want nil", err)
+	}
+}
+
+func TestAliRspErrorWrapsNon200AsChannelError(t *testing.T) {
+	err := aliRspError(400, alipayv3.ErrResponse{
+		Code:    "INVALID_PARAMETER",
+		Message: "out_trade_no missing",
 	})
+	if err == nil {
+		t.Fatal("aliRspError(400) returned nil")
+	}
+	var chErr *paymgr.ChannelError
+	if !errors.As(err, &chErr) {
+		t.Fatalf("err = %T, want *paymgr.ChannelError", err)
+	}
+	if chErr.Channel != paymgr.ChannelAlipay {
+		t.Fatalf("chErr.Channel = %q, want %q", chErr.Channel, paymgr.ChannelAlipay)
+	}
+	if chErr.Code != "INVALID_PARAMETER" {
+		t.Fatalf("chErr.Code = %q, want %q", chErr.Code, "INVALID_PARAMETER")
+	}
+	if chErr.Message != "out_trade_no missing" {
+		t.Fatalf("chErr.Message = %q, want %q", chErr.Message, "out_trade_no missing")
+	}
+}
+
+func TestWrapAlipayErrorPassesNilThrough(t *testing.T) {
+	if err := wrapAlipayError(nil); err != nil {
+		t.Fatalf("wrapAlipayError(nil) = %v, want nil", err)
+	}
+}
+
+func TestWrapAlipayErrorPreservesUnderlyingError(t *testing.T) {
+	underlying := errors.New("network unreachable")
+	wrapped := wrapAlipayError(underlying)
+	if !errors.Is(wrapped, underlying) {
+		t.Fatalf("errors.Is(wrapped, underlying) = false, want true")
+	}
+	var chErr *paymgr.ChannelError
+	if !errors.As(wrapped, &chErr) {
+		t.Fatalf("wrapped = %T, want *paymgr.ChannelError", wrapped)
+	}
+	if chErr.Code != "SDK_ERROR" {
+		t.Fatalf("chErr.Code = %q, want %q", chErr.Code, "SDK_ERROR")
+	}
+}
+
+func TestResolveSourceTakesValueWhenProvided(t *testing.T) {
+	got, err := resolveSource("inline-content", "/some/ignored/path")
 	if err != nil {
-		t.Fatalf("UnifiedOrder() error = %v", err)
+		t.Fatalf("resolveSource() error = %v", err)
 	}
-	if resp.AppParams == "" {
-		t.Fatal("AppParams = empty")
+	if got != "inline-content" {
+		t.Fatalf("resolveSource() = %q, want %q", got, "inline-content")
 	}
-	values, err := url.ParseQuery(resp.AppParams)
+}
+
+func TestResolveSourceFallsBackToFile(t *testing.T) {
+	tmp := filepath.Join(t.TempDir(), "key.pem")
+	if err := os.WriteFile(tmp, []byte("file-content"), 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	got, err := resolveSource("", tmp)
 	if err != nil {
-		t.Fatalf("url.ParseQuery() error = %v", err)
+		t.Fatalf("resolveSource() error = %v", err)
 	}
-	bizContent := values.Get("biz_content")
-	if !strings.Contains(bizContent, `"product_code":"QUICK_MSECURITY_PAY"`) {
-		t.Fatalf("biz_content = %q, want product_code", bizContent)
+	if got != "file-content" {
+		t.Fatalf("resolveSource() = %q, want %q", got, "file-content")
+	}
+}
+
+func TestResolveSourceErrorsWhenBothEmpty(t *testing.T) {
+	if _, err := resolveSource("", ""); err == nil {
+		t.Fatal("resolveSource(\"\", \"\") returned nil error")
+	}
+}
+
+func TestResolveSourceBytesTakesValueWhenProvided(t *testing.T) {
+	got, err := resolveSourceBytes("inline-bytes", "/some/ignored/path")
+	if err != nil {
+		t.Fatalf("resolveSourceBytes() error = %v", err)
+	}
+	if string(got) != "inline-bytes" {
+		t.Fatalf("resolveSourceBytes() = %q, want %q", string(got), "inline-bytes")
+	}
+}
+
+// TestUnifiedOrderUnsupportedTypeReturnsErrUnsupportedType 验证 trade type 兜底分支。
+func TestUnifiedOrderUnsupportedTypeReturnsErrUnsupportedType(t *testing.T) {
+	p := &Provider{}
+	_, err := p.UnifiedOrder(context.Background(), &paymgr.UnifiedOrderRequest{
+		OutTradeNo:  "ORD-1",
+		TotalAmount: 100,
+		Subject:     "test",
+		TradeType:   paymgr.TradeType("unknown"),
+		NotifyURL:   "https://example.com/notify",
+	})
+	if err == nil {
+		t.Fatal("UnifiedOrder returned nil error for unsupported trade type")
+	}
+	if !errors.Is(err, paymgr.ErrUnsupportedType) {
+		t.Fatalf("UnifiedOrder err = %v, want errors.Is(err, paymgr.ErrUnsupportedType)", err)
 	}
 }

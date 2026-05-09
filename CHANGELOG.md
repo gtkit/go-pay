@@ -10,6 +10,22 @@
 
 ### Fixed
 
+## [v1.3.0] - 2026-05-09
+
+### Added
+
+- `paymgr` 新增 `ChannelWechatV2` 常量（值 `"wxpayv2"`），作为微信 V2 协议扩展点占位。本库**不实装** V2 provider，业务方如有 V2 商户号需求可自行实现 `paymgr.Provider` 接口注册到 manager（详见 README 第 14 章）。
+
+### Changed
+
+- ⚠ 支付宝底层 SDK 由 `github.com/smartwalle/alipay/v3`（OpenAPI 1.0 网关）切换为 `github.com/go-pay/gopay/alipay/v3`（OpenAPI v3 RESTful + 必要的 1.0 网关方法）。下游公开 API（`alipay.NewProvider` / `alipay.NewProviderWithConfig` / `alipay.Config` / `alipay.WithXxx`）签名 100% 不变；`paymgr` 8 个统一 API 输入输出语义保持稳定。
+- 渠道错误的原始错误来源从 smartwalle 错误变为 gopay v3 `ErrResponse`，错误文案格式可能与 v1.2.x 略有差异。下游若对错误文案做字符串匹配，建议改为结构化 `errors.As(err, &chErr); chErr.Code == "..."` 判断（见 README 第 15.3 节升级指南）。
+- README 顶部重写项目定位段，明确「业务统一抽象层」身份；新增第 14 章「微信 V2 接入扩展点」、第 15 章「v1.3.0 升级指南」；第 7 章支付宝配置改写为证书模式优先。
+
+### Deprecated
+
+- ⚠ 支付宝**普通公钥模式**（仅设置 `Config.AlipayPublicKey` 字段、未提供证书）软降级。`alipay.WithAlipayPublicKey(...)` Option 与 `Config.AlipayPublicKey` 字段保留仅用于编译兼容，运行时 `NewProvider` / `NewProviderWithConfig` 会返回包装了 `paymgr.ErrNotSupported` 的错误，文案明确指引使用证书模式（`WithCertMode` / `WithCertModePaths`）。原因：支付宝 OpenAPI v3 协议要求用证书计算 `cert_sn` 序列号，普通公钥模式无法生成 sn，是协议级约束。下游升级方法见 README 第 7.3.2 节。
+
 ## [v1.2.1] - 2026-04-27
 
 ### Added
@@ -90,6 +106,7 @@ func (p *YourProvider) ParseRefundNotify(ctx context.Context, r *http.Request) (
 
 详见 `git log v1.0.3`。
 
+[v1.3.0]: https://github.com/gtkit/go-pay/releases/tag/v1.3.0
 [v1.2.1]: https://github.com/gtkit/go-pay/releases/tag/v1.2.1
 [v1.2.0]: https://github.com/gtkit/go-pay/releases/tag/v1.2.0
 [v1.1.0]: https://github.com/gtkit/go-pay/releases/tag/v1.1.0

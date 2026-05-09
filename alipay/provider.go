@@ -6,13 +6,14 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"strings"
-
 	"strconv"
+	"strings"
 	"time"
 
+	"github.com/go-pay/gopay"
+	alipaylegacy "github.com/go-pay/gopay/alipay"
+	alipayv3 "github.com/go-pay/gopay/alipay/v3"
 	"github.com/gtkit/go-pay/paymgr"
-	"github.com/smartwalle/alipay/v3"
 )
 
 // Config 支付宝配置.
@@ -22,7 +23,7 @@ type Config struct {
 	PrivateKeyPath string // 应用私钥路径
 	IsProduction   bool   // true=生产环境, false=沙箱环境
 
-	// 证书模式（推荐）—— 以下三项全部填写则启用证书模式
+	// 证书模式（gopay v3 唯一支持的模式）—— 以下三项全部填写则启用证书模式
 	AppCertPublicKey        string // 应用公钥证书内容
 	AppCertPublicKeyPath    string // 应用公钥证书路径
 	AlipayRootCert          string // 支付宝根证书内容
@@ -30,8 +31,9 @@ type Config struct {
 	AlipayCertPublicKey     string // 支付宝公钥证书内容
 	AlipayCertPublicKeyPath string // 支付宝公钥证书路径
 
-	// 普通公钥模式 —— 仅当证书路径全部为空时使用
-	AlipayPublicKey string // 支付宝公钥
+	// 普通公钥模式 —— 自 v1.3.0 起软降级，运行时返回 ErrNotSupported；
+	// 字段保留仅用于编译兼容，实际接入请使用证书模式（WithCertMode / WithCertModePaths）。
+	AlipayPublicKey string
 }
 
 // Option 用于函数选项模式配置支付宝 Provider。
@@ -65,7 +67,6 @@ func (c *Config) Validate() error {
 	if c.PrivateKey == "" && c.PrivateKeyPath == "" {
 		return fmt.Errorf("alipay: private_key or private_key_path is required")
 	}
-	// 证书模式三项必须全部提供或全部为空
 	hasCert := c.hasAppCert() || c.hasRootCert() || c.hasAlipayCert()
 	allCert := c.hasAppCert() && c.hasRootCert() && c.hasAlipayCert()
 	if hasCert && !allCert {
@@ -85,7 +86,7 @@ func (c *Config) UseCertMode() bool {
 // Provider 支付宝支付提供者.
 type Provider struct {
 	cfg    *Config
-	client *alipay.Client
+	client *alipayv3.ClientV3
 }
 
 // WithAppID 设置支付宝应用 ID。
@@ -140,7 +141,10 @@ func WithCertModePaths(appCertPath, rootCertPath, alipayCertPath string) Option 
 	})
 }
 
-// WithAlipayPublicKey 使用普通公钥模式配置支付宝。
+// WithAlipayPublicKey 设置普通公钥模式（自 v1.3.0 起软降级）。
+//
+// gopay v3 SDK 仅支持证书模式，因此该 Option 在 NewProvider 阶段会触发 ErrNotSupported。
+// 字段与 Option 保留仅用于编译兼容，实际接入请改用 WithCertMode / WithCertModePaths。
 func WithAlipayPublicKey(publicKey string) Option {
 	return optionFunc(func(cfg *Config) error {
 		cfg.AlipayPublicKey = publicKey
@@ -163,6 +167,9 @@ func NewProvider(opts ...Option) (*Provider, error) {
 }
 
 // NewProviderWithConfig 使用结构体配置创建支付宝支付提供者。
+//
+// 自 v1.3.0 起底层 SDK 切换为 github.com/go-pay/gopay/alipay/v3，仅支持证书模式。
+// 仅传 AlipayPublicKey（普通公钥模式）的配置会返回 paymgr.ErrNotSupported 包装错误。
 func NewProviderWithConfig(cfg *Config) (*Provider, error) {
 	if cfg == nil {
 		return nil, fmt.Errorf("alipay: config is required")
@@ -171,45 +178,37 @@ func NewProviderWithConfig(cfg *Config) (*Provider, error) {
 		return nil, err
 	}
 
+	if !cfg.UseCertMode() {
+		return nil, fmt.Errorf("%w: alipay raw public key mode is not supported by gopay v3 SDK; "+
+			"please switch to certificate mode via WithCertMode / WithCertModePaths "+
+			"(provide app cert, alipay root cert and alipay public cert)",
+			paymgr.ErrNotSupported)
+	}
+
 	privateKey, err := resolvePrivateKey(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("alipay: load private key: %w", err)
 	}
 
-	client, err := alipay.New(cfg.AppID, privateKey, cfg.IsProduction)
+	client, err := alipayv3.NewClientV3(cfg.AppID, privateKey, cfg.IsProduction)
 	if err != nil {
 		return nil, fmt.Errorf("alipay: init client: %w", err)
 	}
 
-	// 根据配置选择签名验签方式
-	if cfg.UseCertMode() {
-		// 证书模式（推荐，安全性更高，支持证书自动续期）
-		appCert, err := resolveSource(cfg.AppCertPublicKey, cfg.AppCertPublicKeyPath)
-		if err != nil {
-			return nil, fmt.Errorf("alipay: load app cert: %w", err)
-		}
-		if err := client.LoadAppCertPublicKey(appCert); err != nil {
-			return nil, fmt.Errorf("alipay: load app cert: %w", err)
-		}
-		rootCert, err := resolveSource(cfg.AlipayRootCert, cfg.AlipayRootCertPath)
-		if err != nil {
-			return nil, fmt.Errorf("alipay: load root cert: %w", err)
-		}
-		if err := client.LoadAliPayRootCert(rootCert); err != nil {
-			return nil, fmt.Errorf("alipay: load root cert: %w", err)
-		}
-		alipayCert, err := resolveSource(cfg.AlipayCertPublicKey, cfg.AlipayCertPublicKeyPath)
-		if err != nil {
-			return nil, fmt.Errorf("alipay: load alipay cert: %w", err)
-		}
-		if err := client.LoadAlipayCertPublicKey(alipayCert); err != nil {
-			return nil, fmt.Errorf("alipay: load alipay cert: %w", err)
-		}
-	} else {
-		// 普通公钥模式
-		if err := client.LoadAliPayPublicKey(cfg.AlipayPublicKey); err != nil {
-			return nil, fmt.Errorf("alipay: load alipay public key: %w", err)
-		}
+	appCert, err := resolveSourceBytes(cfg.AppCertPublicKey, cfg.AppCertPublicKeyPath)
+	if err != nil {
+		return nil, fmt.Errorf("alipay: load app cert: %w", err)
+	}
+	rootCert, err := resolveSourceBytes(cfg.AlipayRootCert, cfg.AlipayRootCertPath)
+	if err != nil {
+		return nil, fmt.Errorf("alipay: load root cert: %w", err)
+	}
+	publicCert, err := resolveSourceBytes(cfg.AlipayCertPublicKey, cfg.AlipayCertPublicKeyPath)
+	if err != nil {
+		return nil, fmt.Errorf("alipay: load alipay cert: %w", err)
+	}
+	if err := client.SetCert(appCert, rootCert, publicCert); err != nil {
+		return nil, fmt.Errorf("alipay: set cert: %w", err)
 	}
 
 	return &Provider{
@@ -229,10 +228,8 @@ func (p *Provider) UnifiedOrder(ctx context.Context, req *paymgr.UnifiedOrderReq
 		Channel: paymgr.ChannelAlipay,
 	}
 
-	// 金额转换：分 -> 元（支付宝金额单位为元，保留两位小数）
 	amount := centToYuan(req.TotalAmount)
 
-	// 过期时间处理
 	var timeoutExpress string
 	if !req.ExpireAt.IsZero() {
 		duration := time.Until(req.ExpireAt)
@@ -241,121 +238,66 @@ func (p *Provider) UnifiedOrder(ctx context.Context, req *paymgr.UnifiedOrderReq
 		}
 	}
 
-	// 附加数据
 	passbackParams := encodePassbackParams(req.Metadata)
 
 	switch req.TradeType {
 	case paymgr.TradeTypeNative:
-		// 当面付 —— 生成二维码
-		trade := alipay.TradePreCreate{}
-		trade.OutTradeNo = req.OutTradeNo
-		trade.TotalAmount = amount
-		trade.Subject = req.Subject
-		trade.NotifyURL = req.NotifyURL
-		if timeoutExpress != "" {
-			trade.TimeoutExpress = timeoutExpress
-		}
-		if passbackParams != "" {
-			trade.PassbackParams = passbackParams
-		}
-
-		result, err := p.client.TradePreCreate(ctx, trade)
+		bm := buildAlipayCommonBody(req, amount, timeoutExpress, passbackParams)
+		aliRsp, err := p.client.TradePrecreate(ctx, bm)
 		if err != nil {
 			return nil, wrapAlipayError(err)
 		}
-		if !result.IsSuccess() {
-			return nil, paymgr.NewChannelError(
-				paymgr.ChannelAlipay,
-				result.SubCode,
-				result.SubMsg,
-				nil,
-			)
+		if rspErr := aliRspError(aliRsp.StatusCode, aliRsp.ErrResponse); rspErr != nil {
+			return nil, rspErr
 		}
-		resp.CodeURL = result.QRCode
+		resp.CodeURL = aliRsp.QrCode
 
 	case paymgr.TradeTypeJSAPI:
-		// 支付宝小程序支付 —— 使用 alipay.trade.create
-		trade := alipay.TradeCreate{}
-		trade.OutTradeNo = req.OutTradeNo
-		trade.TotalAmount = amount
-		trade.Subject = req.Subject
-		trade.NotifyURL = req.NotifyURL
-		// 支付宝 JSAPI 场景下使用 buyer_id
+		bm := buildAlipayCommonBody(req, amount, timeoutExpress, passbackParams)
 		if req.OpenID != "" {
-			trade.BuyerId = req.OpenID
+			bm.Set("buyer_id", req.OpenID)
 		}
-		if timeoutExpress != "" {
-			trade.TimeoutExpress = timeoutExpress
-		}
-
-		result, err := p.client.TradeCreate(ctx, trade)
+		aliRsp, err := p.client.TradeCreate(ctx, bm)
 		if err != nil {
 			return nil, wrapAlipayError(err)
 		}
-		if !result.IsSuccess() {
-			return nil, paymgr.NewChannelError(
-				paymgr.ChannelAlipay,
-				result.SubCode,
-				result.SubMsg,
-				nil,
-			)
+		if rspErr := aliRspError(aliRsp.StatusCode, aliRsp.ErrResponse); rspErr != nil {
+			return nil, rspErr
 		}
-		resp.PrepayID = result.TradeNo
+		resp.PrepayID = aliRsp.TradeNo
 
 	case paymgr.TradeTypeApp:
-		// APP 支付 —— 返回签名后的订单字符串
-		trade := alipay.TradeAppPay{}
-		trade.OutTradeNo = req.OutTradeNo
-		trade.TotalAmount = amount
-		trade.Subject = req.Subject
-		trade.ProductCode = "QUICK_MSECURITY_PAY"
-		trade.NotifyURL = req.NotifyURL
-		if timeoutExpress != "" {
-			trade.TimeoutExpress = timeoutExpress
-		}
-		if passbackParams != "" {
-			trade.PassbackParams = passbackParams
-		}
-
-		result, err := p.client.TradeAppPay(trade)
+		bm := buildAlipayCommonBody(req, amount, timeoutExpress, passbackParams)
+		bm.Set("product_code", "QUICK_MSECURITY_PAY")
+		orderStr, err := p.client.TradeAppPay(ctx, bm)
 		if err != nil {
 			return nil, wrapAlipayError(err)
 		}
-		// TradeAppPay 返回的是签名后的完整参数字符串，APP 端直接调起
-		resp.AppParams = result
+		resp.AppParams = orderStr
 
 	case paymgr.TradeTypeH5:
-		// 手机网站支付
-		trade := alipay.TradeWapPay{}
-		trade.OutTradeNo = req.OutTradeNo
-		trade.TotalAmount = amount
-		trade.Subject = req.Subject
-		trade.ProductCode = "QUICK_WAP_WAY"
-		trade.NotifyURL = req.NotifyURL
+		bm := buildAlipayCommonBody(req, amount, timeoutExpress, passbackParams)
+		bm.Set("product_code", "QUICK_WAP_WAY")
 		if req.ReturnURL != "" {
-			trade.ReturnURL = req.ReturnURL
+			bm.Set("return_url", req.ReturnURL)
 		}
-		if timeoutExpress != "" {
-			trade.TimeoutExpress = timeoutExpress
-		}
-		if passbackParams != "" {
-			trade.PassbackParams = passbackParams
-		}
-
-		result, err := p.client.TradeWapPay(trade)
+		payURL, err := p.client.TradeWapPay(ctx, bm)
 		if err != nil {
 			return nil, wrapAlipayError(err)
 		}
-		// TradeWapPay 返回跳转 URL
-		resp.PayURL = result.String()
+		resp.PayURL = payURL
 
 	case paymgr.TradeTypePage:
-		trade := buildTradePagePay(req, amount, timeoutExpress, passbackParams)
-		result, err := p.client.TradePagePay(trade)
+		bm := buildAlipayCommonBody(req, amount, timeoutExpress, passbackParams)
+		bm.Set("product_code", "FAST_INSTANT_TRADE_PAY")
+		if req.ReturnURL != "" {
+			bm.Set("return_url", req.ReturnURL)
+		}
+		payURL, err := p.client.TradePagePay(ctx, bm)
 		if err != nil {
 			return nil, wrapAlipayError(err)
 		}
-		resp.PayURL = result.String()
+		resp.PayURL = payURL
 
 	default:
 		return nil, fmt.Errorf("%w: %s", paymgr.ErrUnsupportedType, req.TradeType)
@@ -366,46 +308,43 @@ func (p *Provider) UnifiedOrder(ctx context.Context, req *paymgr.UnifiedOrderReq
 
 // QueryOrder 查询订单.
 func (p *Provider) QueryOrder(ctx context.Context, req *paymgr.QueryOrderRequest) (*paymgr.QueryOrderResponse, error) {
-	trade := alipay.TradeQuery{}
+	bm := gopay.BodyMap{}
 	if req.TransactionID != "" {
-		trade.TradeNo = req.TransactionID
+		bm.Set("trade_no", req.TransactionID)
 	} else {
-		trade.OutTradeNo = req.OutTradeNo
+		bm.Set("out_trade_no", req.OutTradeNo)
 	}
 
-	result, err := p.client.TradeQuery(ctx, trade)
+	aliRsp, err := p.client.TradeQuery(ctx, bm)
 	if err != nil {
 		return nil, wrapAlipayError(err)
 	}
-	if !result.IsSuccess() {
-		// 特殊处理：订单不存在
-		if result.SubCode == "ACQ.TRADE_NOT_EXIST" {
+	if aliRsp.StatusCode != http.StatusOK {
+		if aliRsp.ErrResponse.Code == "ACQ.TRADE_NOT_EXIST" {
 			return nil, paymgr.ErrOrderNotFound
 		}
 		return nil, paymgr.NewChannelError(
 			paymgr.ChannelAlipay,
-			result.SubCode,
-			result.SubMsg,
+			aliRsp.ErrResponse.Code,
+			aliRsp.ErrResponse.Message,
 			nil,
 		)
 	}
 
 	resp := &paymgr.QueryOrderResponse{
 		Channel:       paymgr.ChannelAlipay,
-		OutTradeNo:    result.OutTradeNo,
-		TransactionID: result.TradeNo,
-		TradeStatus:   mapAlipayTradeStatus(result.TradeStatus),
-		BuyerID:       result.BuyerUserId,
+		OutTradeNo:    aliRsp.OutTradeNo,
+		TransactionID: aliRsp.TradeNo,
+		TradeStatus:   mapAlipayTradeStatus(aliRsp.TradeStatus),
+		BuyerID:       aliRsp.BuyerUserId,
 	}
 
-	// 金额转换：元 -> 分
-	if result.TotalAmount != "" {
-		resp.TotalAmount = yuanToCent(result.TotalAmount)
+	if aliRsp.TotalAmount != "" {
+		resp.TotalAmount = yuanToCent(aliRsp.TotalAmount)
 	}
 
-	// 支付时间解析
-	if result.SendPayDate != "" {
-		if t, err := time.Parse("2006-01-02 15:04:05", result.SendPayDate); err == nil {
+	if aliRsp.SendPayDate != "" {
+		if t, err := time.Parse("2006-01-02 15:04:05", aliRsp.SendPayDate); err == nil {
 			resp.PaidAt = t
 		}
 	}
@@ -415,22 +354,22 @@ func (p *Provider) QueryOrder(ctx context.Context, req *paymgr.QueryOrderRequest
 
 // CloseOrder 关闭订单.
 func (p *Provider) CloseOrder(ctx context.Context, req *paymgr.CloseOrderRequest) error {
-	trade := alipay.TradeClose{}
-	trade.OutTradeNo = req.OutTradeNo
+	bm := gopay.BodyMap{}
+	bm.Set("out_trade_no", req.OutTradeNo)
 
-	result, err := p.client.TradeClose(ctx, trade)
+	aliRsp, err := p.client.TradeClose(ctx, bm)
 	if err != nil {
 		return wrapAlipayError(err)
 	}
-	if !result.IsSuccess() {
+	if aliRsp.StatusCode != http.StatusOK {
 		// 已关闭的订单重复关闭不算错误
-		if result.SubCode == "ACQ.TRADE_HAS_CLOSE" {
+		if aliRsp.ErrResponse.Code == "ACQ.TRADE_HAS_CLOSE" {
 			return nil
 		}
 		return paymgr.NewChannelError(
 			paymgr.ChannelAlipay,
-			result.SubCode,
-			result.SubMsg,
+			aliRsp.ErrResponse.Code,
+			aliRsp.ErrResponse.Message,
 			nil,
 		)
 	}
@@ -439,37 +378,31 @@ func (p *Provider) CloseOrder(ctx context.Context, req *paymgr.CloseOrderRequest
 
 // Refund 申请退款.
 func (p *Provider) Refund(ctx context.Context, req *paymgr.RefundRequest) (*paymgr.RefundResponse, error) {
-	trade := alipay.TradeRefund{}
-	trade.OutRequestNo = req.OutRefundNo
-	trade.RefundAmount = centToYuan(req.RefundAmount)
-	trade.RefundReason = req.Reason
-
+	bm := gopay.BodyMap{}
+	bm.Set("out_request_no", req.OutRefundNo).
+		Set("refund_amount", centToYuan(req.RefundAmount))
+	if req.Reason != "" {
+		bm.Set("refund_reason", req.Reason)
+	}
 	if req.TransactionID != "" {
-		trade.TradeNo = req.TransactionID
+		bm.Set("trade_no", req.TransactionID)
 	} else {
-		trade.OutTradeNo = req.OutTradeNo
+		bm.Set("out_trade_no", req.OutTradeNo)
 	}
 
-	result, err := p.client.TradeRefund(ctx, trade)
+	aliRsp, err := p.client.TradeRefund(ctx, bm)
 	if err != nil {
 		return nil, wrapAlipayError(err)
 	}
-	if !result.IsSuccess() {
-		return nil, paymgr.NewChannelError(
-			paymgr.ChannelAlipay,
-			result.SubCode,
-			result.SubMsg,
-			nil,
-		)
+	if rspErr := aliRspError(aliRsp.StatusCode, aliRsp.ErrResponse); rspErr != nil {
+		return nil, rspErr
 	}
-
-	refundAmount := yuanToCent(result.RefundFee)
 
 	return &paymgr.RefundResponse{
 		Channel:      paymgr.ChannelAlipay,
 		OutRefundNo:  req.OutRefundNo,
-		RefundID:     result.TradeNo, // 支付宝退款无单独退款号，使用交易号
-		RefundAmount: refundAmount,
+		RefundID:     aliRsp.TradeNo, // 支付宝退款无独立退款号，复用交易号
+		RefundAmount: yuanToCent(aliRsp.RefundFee),
 	}, nil
 }
 
@@ -478,46 +411,46 @@ func (p *Provider) Refund(ctx context.Context, req *paymgr.RefundRequest) (*paym
 // 调用 alipay.trade.fastpay.refund.query，按退款请求号（OutRequestNo 即商户退款单号）查询。
 // 未查到退款记录时返回 ErrOrderNotFound。
 func (p *Provider) QueryRefund(ctx context.Context, req *paymgr.QueryRefundRequest) (*paymgr.QueryRefundResponse, error) {
-	trade := alipay.TradeFastPayRefundQuery{}
-	trade.OutRequestNo = req.OutRefundNo
+	bm := gopay.BodyMap{}
+	bm.Set("out_request_no", req.OutRefundNo)
 	if req.TransactionID != "" {
-		trade.TradeNo = req.TransactionID
+		bm.Set("trade_no", req.TransactionID)
 	} else {
-		trade.OutTradeNo = req.OutTradeNo
+		bm.Set("out_trade_no", req.OutTradeNo)
 	}
 
-	result, err := p.client.TradeFastPayRefundQuery(ctx, trade)
+	aliRsp, err := p.client.TradeFastPayRefundQuery(ctx, bm)
 	if err != nil {
 		return nil, wrapAlipayError(err)
 	}
-	if !result.IsSuccess() {
-		if result.SubCode == "ACQ.TRADE_NOT_EXIST" {
+	if aliRsp.StatusCode != http.StatusOK {
+		if aliRsp.ErrResponse.Code == "ACQ.TRADE_NOT_EXIST" {
 			return nil, paymgr.ErrOrderNotFound
 		}
 		return nil, paymgr.NewChannelError(
 			paymgr.ChannelAlipay,
-			result.SubCode,
-			result.SubMsg,
+			aliRsp.ErrResponse.Code,
+			aliRsp.ErrResponse.Message,
 			nil,
 		)
 	}
 
 	resp := &paymgr.QueryRefundResponse{
 		Channel:       paymgr.ChannelAlipay,
-		OutTradeNo:    result.OutTradeNo,
-		TransactionID: result.TradeNo,
-		OutRefundNo:   result.OutRequestNo,
-		RefundID:      result.TradeNo, // 支付宝无独立退款号，退款单通过交易号 + 退款请求号联合定位
-		RefundStatus:  mapAlipayRefundStatus(result.RefundStatus),
+		OutTradeNo:    aliRsp.OutTradeNo,
+		TransactionID: aliRsp.TradeNo,
+		OutRefundNo:   aliRsp.OutRequestNo,
+		RefundID:      aliRsp.TradeNo, // 支付宝无独立退款号
+		RefundStatus:  mapAlipayRefundStatus(aliRsp.RefundStatus),
 	}
-	if result.RefundAmount != "" {
-		resp.RefundAmount = yuanToCent(result.RefundAmount)
+	if aliRsp.RefundAmount != "" {
+		resp.RefundAmount = yuanToCent(aliRsp.RefundAmount)
 	}
-	if result.TotalAmount != "" {
-		resp.TotalAmount = yuanToCent(result.TotalAmount)
+	if aliRsp.TotalAmount != "" {
+		resp.TotalAmount = yuanToCent(aliRsp.TotalAmount)
 	}
-	if result.GMTRefundPay != "" {
-		if t, err := time.Parse("2006-01-02 15:04:05", result.GMTRefundPay); err == nil {
+	if aliRsp.GmtRefundPay != "" {
+		if t, err := time.Parse("2006-01-02 15:04:05", aliRsp.GmtRefundPay); err == nil {
 			resp.RefundedAt = t
 		}
 	}
@@ -526,50 +459,54 @@ func (p *Provider) QueryRefund(ctx context.Context, req *paymgr.QueryRefundReque
 
 // ParseNotify 解析异步通知.
 //
-// smartwalle/alipay 的 DecodeNotification 内部已完成验签。
-func (p *Provider) ParseNotify(ctx context.Context, r *http.Request) (*paymgr.NotifyResult, error) {
-	if err := r.ParseForm(); err != nil {
+// gopay/alipay/v3 子包未提供独立的 notify 验签 API，此处复用 gopay 老版 alipay 包的
+// ParseNotifyToBodyMap + VerifySignWithCert（异步通知验签机制与协议代次无关，
+// 始终基于支付宝公钥证书 RSA-SHA256 验签）。
+func (p *Provider) ParseNotify(_ context.Context, r *http.Request) (*paymgr.NotifyResult, error) {
+	bm, err := alipaylegacy.ParseNotifyToBodyMap(r)
+	if err != nil {
 		return nil, fmt.Errorf("%w: parse form: %v", paymgr.ErrInvalidNotify, err)
 	}
 
-	// DecodeNotification 内部调用 VerifySign 验签
-	noti, err := p.client.DecodeNotification(ctx, r.Form)
+	cert, err := resolveSourceBytes(p.cfg.AlipayCertPublicKey, p.cfg.AlipayCertPublicKeyPath)
+	if err != nil {
+		return nil, fmt.Errorf("%w: load alipay cert: %v", paymgr.ErrInvalidSign, err)
+	}
+	ok, err := alipaylegacy.VerifySignWithCert(cert, bm)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", paymgr.ErrInvalidSign, err)
+	}
+	if !ok {
+		return nil, fmt.Errorf("%w: signature mismatch", paymgr.ErrInvalidSign)
 	}
 
 	result := &paymgr.NotifyResult{
 		Channel:       paymgr.ChannelAlipay,
-		OutTradeNo:    noti.OutTradeNo,
-		TransactionID: noti.TradeNo,
-		TradeStatus:   mapAlipayTradeStatus(noti.TradeStatus),
-		BuyerID:       noti.BuyerId,
+		OutTradeNo:    bm.GetString("out_trade_no"),
+		TransactionID: bm.GetString("trade_no"),
+		TradeStatus:   mapAlipayTradeStatus(bm.GetString("trade_status")),
+		BuyerID:       bm.GetString("buyer_id"),
 	}
 
 	// 退款事件识别：
 	// 支付宝退款没有独立通知端点，退款结果与支付结果共用同一个 notify_url。
-	// 当 GmtRefund 或 RefundFee 非空时，本次回调是退款事件；此时原始 trade_status
+	// 当 gmt_refund 或 refund_fee 非空时，本次回调是退款事件；此时原始 trade_status
 	// 在全额退款下为 TRADE_CLOSED、在部分退款下仍为 TRADE_SUCCESS，
 	// 业务层无法仅凭交易状态区分，因此在此显式覆盖为 Refunded。
-	if noti.GmtRefund != "" || noti.RefundFee != "" {
+	if bm.GetString("gmt_refund") != "" || bm.GetString("refund_fee") != "" {
 		result.TradeStatus = paymgr.TradeStatusRefunded
 	}
 
-	// 金额
-	if noti.TotalAmount != "" {
-		result.TotalAmount = yuanToCent(noti.TotalAmount)
+	if amt := bm.GetString("total_amount"); amt != "" {
+		result.TotalAmount = yuanToCent(amt)
 	}
-
-	// 支付时间
-	if noti.GmtPayment != "" {
-		if t, err := time.Parse("2006-01-02 15:04:05", noti.GmtPayment); err == nil {
+	if gp := bm.GetString("gmt_payment"); gp != "" {
+		if t, err := time.Parse("2006-01-02 15:04:05", gp); err == nil {
 			result.PaidAt = t
 		}
 	}
-
-	// 附加数据
-	if noti.PassbackParams != "" {
-		metadata := decodePassbackParams(noti.PassbackParams)
+	if pp := bm.GetString("passback_params"); pp != "" {
+		metadata := decodePassbackParams(pp)
 		if len(metadata) > 0 {
 			result.Metadata = metadata
 		}
@@ -588,19 +525,44 @@ func (p *Provider) ParseRefundNotify(_ context.Context, _ *http.Request) (*paymg
 		paymgr.ErrNotSupported, paymgr.TradeStatusRefunded)
 }
 
-// ACKNotify 回写成功响应
+// ACKNotify 回写成功响应。
 //
 // 支付宝需返回纯文本 "success".
 func (p *Provider) ACKNotify(w http.ResponseWriter) {
-	alipay.ACKNotification(w)
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte("success"))
 }
 
 // --- 内部辅助函数 ---
 
+// buildAlipayCommonBody 构造 gopay v3 通用 BodyMap 参数（共用字段）。
+func buildAlipayCommonBody(req *paymgr.UnifiedOrderRequest, amount, timeoutExpress, passbackParams string) gopay.BodyMap {
+	bm := gopay.BodyMap{}
+	bm.Set("out_trade_no", req.OutTradeNo).
+		Set("total_amount", amount).
+		Set("subject", req.Subject)
+	if req.NotifyURL != "" {
+		bm.Set("notify_url", req.NotifyURL)
+	}
+	if timeoutExpress != "" {
+		bm.Set("timeout_express", timeoutExpress)
+	}
+	if passbackParams != "" {
+		bm.Set("passback_params", passbackParams)
+	}
+	return bm
+}
+
+// aliRspError 把 v3 RESTful 非 200 响应统一转换为 paymgr.ChannelError。
+func aliRspError(statusCode int, errRsp alipayv3.ErrResponse) error {
+	if statusCode == http.StatusOK {
+		return nil
+	}
+	return paymgr.NewChannelError(paymgr.ChannelAlipay, errRsp.Code, errRsp.Message, nil)
+}
+
 // mapAlipayRefundStatus 支付宝退款状态映射.
-//
-// 支付宝文档: refund_status 仅在退款处理中/成功时返回具体值，未返回该字段表示
-// 退款请求未收到或退款失败，统一归类为 Error。
 func mapAlipayRefundStatus(status string) paymgr.RefundStatus {
 	switch status {
 	case "REFUND_SUCCESS":
@@ -615,46 +577,27 @@ func mapAlipayRefundStatus(status string) paymgr.RefundStatus {
 }
 
 // mapAlipayTradeStatus 支付宝交易状态映射.
-func mapAlipayTradeStatus(status alipay.TradeStatus) paymgr.TradeStatus {
+func mapAlipayTradeStatus(status string) paymgr.TradeStatus {
 	switch status {
-	case alipay.TradeStatusWaitBuyerPay:
+	case "WAIT_BUYER_PAY":
 		return paymgr.TradeStatusPending
-	case alipay.TradeStatusSuccess:
+	case "TRADE_SUCCESS":
 		return paymgr.TradeStatusPaid
-	case alipay.TradeStatusFinished:
+	case "TRADE_FINISHED":
 		return paymgr.TradeStatusPaid // TRADE_FINISHED 表示交易完结（不可退款），但属于已支付
-	case alipay.TradeStatusClosed:
+	case "TRADE_CLOSED":
 		return paymgr.TradeStatusClosed
 	default:
 		return paymgr.TradeStatusError
 	}
 }
 
-// wrapAlipayError 包装支付宝 SDK 错误.
+// wrapAlipayError 包装 SDK 错误（非业务错误，例如网络/序列化）。
 func wrapAlipayError(err error) error {
 	if err == nil {
 		return nil
 	}
 	return paymgr.NewChannelError(paymgr.ChannelAlipay, "SDK_ERROR", err.Error(), err)
-}
-
-func buildTradePagePay(req *paymgr.UnifiedOrderRequest, amount, timeoutExpress, passbackParams string) alipay.TradePagePay {
-	trade := alipay.TradePagePay{}
-	trade.OutTradeNo = req.OutTradeNo
-	trade.TotalAmount = amount
-	trade.Subject = req.Subject
-	trade.ProductCode = "FAST_INSTANT_TRADE_PAY"
-	trade.NotifyURL = req.NotifyURL
-	if req.ReturnURL != "" {
-		trade.ReturnURL = req.ReturnURL
-	}
-	if timeoutExpress != "" {
-		trade.TimeoutExpress = timeoutExpress
-	}
-	if passbackParams != "" {
-		trade.PassbackParams = passbackParams
-	}
-	return trade
 }
 
 // centToYuan 分转元，返回两位小数字符串.
@@ -752,14 +695,10 @@ func decodePassbackParams(raw string) map[string]string {
 		return nil
 	}
 
-	// 优先按标准 query string 解析
 	if values, err := url.ParseQuery(raw); err == nil && len(values) > 0 && !hasEncodedSeparator(values) {
 		return flattenValues(values)
 	}
 
-	// 兜底：兼容整串被 URL-encode 过一次的旧版格式（例如 "a%3D1%26b%3D2"）。
-	// 这类输入里 & / = 都被转义过，ParseQuery 会把整串当成一个 key，
-	// 需要先 QueryUnescape 再解析。
 	if decoded, err := url.QueryUnescape(raw); err == nil && decoded != raw {
 		if values, err := url.ParseQuery(decoded); err == nil && len(values) > 0 && !hasEncodedSeparator(values) {
 			return flattenValues(values)
@@ -769,9 +708,6 @@ func decodePassbackParams(raw string) map[string]string {
 	return nil
 }
 
-// hasEncodedSeparator 判断 ParseQuery 的结果是否疑似"整串被 URL-encode 过"。
-// 正常 query string 的 key 里不会出现 = 或 &，若出现则说明原始分隔符仍是转义态，
-// 这次解析得到的 key 其实是未分隔的整串，需要走兜底路径。
 func hasEncodedSeparator(values url.Values) bool {
 	for k := range values {
 		if strings.ContainsAny(k, "=&") {
@@ -821,4 +757,14 @@ func resolveSource(value, path string) (string, error) {
 		return "", err
 	}
 	return string(data), nil
+}
+
+func resolveSourceBytes(value, path string) ([]byte, error) {
+	if value != "" {
+		return []byte(value), nil
+	}
+	if path == "" {
+		return nil, fmt.Errorf("missing source value")
+	}
+	return os.ReadFile(path)
 }

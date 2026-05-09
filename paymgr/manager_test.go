@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -55,6 +56,26 @@ func TestManagerCloseOrderNilRequest(t *testing.T) {
 	}
 	if !errors.Is(err, ErrInvalidParam) {
 		t.Fatalf("CloseOrder() error = %v, want wrapped ErrInvalidParam", err)
+	}
+}
+
+func TestManagerUnifiedOrderUnregisteredWechatV2(t *testing.T) {
+	mgr := NewManager()
+	req := &UnifiedOrderRequest{
+		OutTradeNo:  "ORD-V2-1",
+		TotalAmount: 100,
+		Subject:     "v2 placeholder",
+		TradeType:   TradeTypeJSAPI,
+		NotifyURL:   "https://example.com/notify",
+		OpenID:      "openid-stub",
+	}
+
+	_, err := mgr.UnifiedOrder(t.Context(), ChannelWechatV2, req)
+	if err == nil {
+		t.Fatal("UnifiedOrder() returned nil error for unregistered ChannelWechatV2")
+	}
+	if !strings.Contains(err.Error(), "wxpayv2") || !strings.Contains(err.Error(), "not registered") {
+		t.Fatalf("UnifiedOrder() error = %v, want contains %q and %q", err, "wxpayv2", "not registered")
 	}
 }
 

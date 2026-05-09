@@ -2,7 +2,7 @@
 //
 // 设计原则:
 //   - 微信支付使用官方 SDK: github.com/wechatpay-apiv3/wechatpay-go
-//   - 支付宝使用 smartwalle/alipay/v3
+//   - 支付宝使用 github.com/go-pay/gopay/alipay/v3
 //   - 业务层通过 Provider 接口调用，无需感知底层 SDK 差异
 //   - 所有金额使用 int64 分为单位，避免浮点精度问题
 package paymgr
@@ -20,6 +20,9 @@ type Channel string
 const (
 	ChannelWechat Channel = "wxpay"
 	ChannelAlipay Channel = "alipay"
+	// ChannelWechatV2 是微信支付 V2 协议的渠道标识占位。本库不实装 V2 provider；
+	// 调用方如需兼容老商户号，自行实现 Provider 接口并 Register 到 manager。
+	ChannelWechatV2 Channel = "wxpayv2"
 )
 
 // TradeType 交易类型.
