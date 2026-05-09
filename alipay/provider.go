@@ -254,6 +254,11 @@ func (p *Provider) UnifiedOrder(ctx context.Context, req *paymgr.UnifiedOrderReq
 
 	case paymgr.TradeTypeJSAPI:
 		bm := buildAlipayCommonBody(req, amount, timeoutExpress, passbackParams)
+		// product_code=JSAPI_PAY 标识小程序支付场景；op_app_id 是实际操作的小程序 ID，
+		// 单应用场景下与主 AppID 一致——若未来出现「一个商户主体下多个小程序」场景，
+		// 可给 paymgr.UnifiedOrderRequest 新增可选字段覆盖此处默认值。
+		bm.Set("product_code", "JSAPI_PAY")
+		bm.Set("op_app_id", p.cfg.AppID)
 		if req.OpenID != "" {
 			bm.Set("buyer_id", req.OpenID)
 		}

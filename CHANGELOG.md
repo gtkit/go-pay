@@ -10,6 +10,12 @@
 
 ### Fixed
 
+## [v1.3.1] - 2026-05-09
+
+### Fixed
+
+- 修复支付宝 JSAPI 下单缺失 `product_code` 和 `op_app_id` 必填参数导致网关拒绝的问题。`product_code` 固定填 `JSAPI_PAY`，`op_app_id` 默认取 `Config.AppID`（单商户单小程序场景一致）。该 bug 自 v1.2.x smartwalle SDK 时代潜伏，因新 gopay v3 网关参数校验更严而暴露；v1.3.0 沙箱验证发现并修复。下游单应用场景零代码变更。
+
 ## [v1.3.0] - 2026-05-09
 
 ### Added
@@ -106,6 +112,7 @@ func (p *YourProvider) ParseRefundNotify(ctx context.Context, r *http.Request) (
 
 详见 `git log v1.0.3`。
 
+[v1.3.1]: https://github.com/gtkit/go-pay/releases/tag/v1.3.1
 [v1.3.0]: https://github.com/gtkit/go-pay/releases/tag/v1.3.0
 [v1.2.1]: https://github.com/gtkit/go-pay/releases/tag/v1.2.1
 [v1.2.0]: https://github.com/gtkit/go-pay/releases/tag/v1.2.0
