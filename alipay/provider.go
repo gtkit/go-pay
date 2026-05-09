@@ -440,6 +440,13 @@ func (p *Provider) QueryRefund(ctx context.Context, req *paymgr.QueryRefundReque
 		)
 	}
 
+	// 支付宝对「不存在的退款单号」返回 200 但响应所有关键字段为空字符串
+	// （沙箱实测：out_request_no/out_trade_no/trade_no/refund_amount 全空），
+	// 必须在此识别并返回 ErrOrderNotFound，否则下游会拿到空响应误判为成功。
+	if aliRsp.OutRequestNo == "" {
+		return nil, paymgr.ErrOrderNotFound
+	}
+
 	resp := &paymgr.QueryRefundResponse{
 		Channel:       paymgr.ChannelAlipay,
 		OutTradeNo:    aliRsp.OutTradeNo,

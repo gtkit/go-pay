@@ -10,6 +10,12 @@
 
 ### Fixed
 
+## [v1.3.2] - 2026-05-09
+
+### Fixed
+
+- 修复 `alipay.Provider.QueryRefund` 在「退款单不存在」时返回空响应而不是 `paymgr.ErrOrderNotFound` 的边界条件 bug。支付宝对不存在的退款单返回 HTTP 200 + 所有关键字段为空字符串（不返回 `ACQ.TRADE_NOT_EXIST` 错误码），原代码看到 200 即构造响应返回，下游 `errors.Is(err, ErrOrderNotFound)` 判断永远 false。修复后响应 200 但 `out_request_no` 为空时显式返回 `ErrOrderNotFound`，与 `QueryOrder` 行为一致。该 bug 自 v1.2.x smartwalle SDK 时代潜伏，沙箱集成验证捕获。
+
 ## [v1.3.1] - 2026-05-09
 
 ### Fixed
@@ -112,6 +118,7 @@ func (p *YourProvider) ParseRefundNotify(ctx context.Context, r *http.Request) (
 
 详见 `git log v1.0.3`。
 
+[v1.3.2]: https://github.com/gtkit/go-pay/releases/tag/v1.3.2
 [v1.3.1]: https://github.com/gtkit/go-pay/releases/tag/v1.3.1
 [v1.3.0]: https://github.com/gtkit/go-pay/releases/tag/v1.3.0
 [v1.2.1]: https://github.com/gtkit/go-pay/releases/tag/v1.2.1
