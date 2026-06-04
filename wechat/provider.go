@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/wechatpay-apiv3/wechatpay-go/core"
+	"github.com/wechatpay-apiv3/wechatpay-go/core/auth"
 	"github.com/wechatpay-apiv3/wechatpay-go/core/auth/verifiers"
 	"github.com/wechatpay-apiv3/wechatpay-go/core/notify"
 	"github.com/wechatpay-apiv3/wechatpay-go/core/option"
@@ -42,6 +43,14 @@ type Config struct {
 	WechatPayCertificatePath string            // 微信支付平台证书路径
 	WechatPayCertificatePEM  string            // 微信支付平台证书 PEM 文本
 	WechatPayCertificate     *x509.Certificate // 微信支付平台证书（直接提供则优先）
+
+	// 微信支付公钥模式（2024 年起微信对新进件商户只下发公钥，不再签发平台证书）。
+	// 配置了 WechatPayPublicKeyID 且提供公钥来源之一时，自动启用公钥验签，
+	// 不再加载平台证书。商户私钥与商户证书序列号在公钥模式下仍必填（用于请求签名）。
+	WechatPayPublicKeyID   string         // 微信支付公钥 ID（形如 PUB_KEY_ID_xxx）
+	WechatPayPublicKeyPath string         // 微信支付公钥文件路径（PEM 格式）
+	WechatPayPublicKeyPEM  string         // 微信支付公钥 PEM 文本
+	WechatPayPublicKey     *rsa.PublicKey // 微信支付公钥（直接提供则优先）
 }
 
 // Option 用于函数选项模式配置微信 Provider。
@@ -92,10 +101,24 @@ func (c *Config) Validate() error {
 	if c.MchPrivateKey == nil && c.MchPrivateKeyPEM == "" && c.MchPrivateKeyPath == "" {
 		return fmt.Errorf("wechat: mch_private_key, mch_private_key_pem or mch_private_key_path is required")
 	}
-	if c.WechatPayCertificate == nil && c.WechatPayCertificatePEM == "" && c.WechatPayCertificatePath == "" {
-		return fmt.Errorf("wechat: wechatpay_certificate, wechatpay_certificate_pem or wechatpay_certificate_path is required")
+	hasCert := c.WechatPayCertificate != nil || c.WechatPayCertificatePEM != "" || c.WechatPayCertificatePath != ""
+	hasPublicKey := c.WechatPayPublicKey != nil || c.WechatPayPublicKeyPEM != "" || c.WechatPayPublicKeyPath != ""
+	if hasPublicKey && c.WechatPayPublicKeyID == "" {
+		return fmt.Errorf("wechat: wechat_pay_public_key_id is required when a wechat pay public key is provided")
+	}
+	if !hasCert && !hasPublicKey {
+		return fmt.Errorf("wechat: platform certificate (wechatpay_certificate/_pem/_path) " +
+			"or wechat pay public key (wechat_pay_public_key/_pem/_path) is required")
 	}
 	return nil
+}
+
+// usePublicKey 报告是否启用微信支付公钥验签模式。
+//
+// 配置了公钥 ID 且提供了公钥来源之一时返回 true，否则沿用平台证书模式。
+func (c *Config) usePublicKey() bool {
+	return c.WechatPayPublicKeyID != "" &&
+		(c.WechatPayPublicKey != nil || c.WechatPayPublicKeyPEM != "" || c.WechatPayPublicKeyPath != "")
 }
 
 // WithAppID 设置微信应用 AppID。
@@ -164,6 +187,40 @@ func WithPlatformCertificate(certificate *x509.Certificate) Option {
 	})
 }
 
+// WithPublicKeyID 设置微信支付公钥 ID（形如 PUB_KEY_ID_xxx）。
+//
+// 与 WithPublicKey/WithPublicKeyPEM/WithPublicKeyPath 配合使用以启用公钥验签模式。
+func WithPublicKeyID(keyID string) Option {
+	return optionFunc(func(cfg *Config) error {
+		cfg.WechatPayPublicKeyID = keyID
+		return nil
+	})
+}
+
+// WithPublicKeyPath 通过文件路径设置微信支付公钥。
+func WithPublicKeyPath(path string) Option {
+	return optionFunc(func(cfg *Config) error {
+		cfg.WechatPayPublicKeyPath = path
+		return nil
+	})
+}
+
+// WithPublicKeyPEM 通过 PEM 文本设置微信支付公钥。
+func WithPublicKeyPEM(publicKeyPEM string) Option {
+	return optionFunc(func(cfg *Config) error {
+		cfg.WechatPayPublicKeyPEM = publicKeyPEM
+		return nil
+	})
+}
+
+// WithPublicKey 直接设置已解析的微信支付公钥。
+func WithPublicKey(publicKey *rsa.PublicKey) Option {
+	return optionFunc(func(cfg *Config) error {
+		cfg.WechatPayPublicKey = publicKey
+		return nil
+	})
+}
+
 // NewProvider 创建微信支付提供者.
 //
 // 初始化时会自动注册平台证书下载器，后续自动轮转平台证书。
@@ -195,20 +252,14 @@ func NewProviderWithConfig(ctx context.Context, cfg *Config) (*Provider, error) 
 		return nil, fmt.Errorf("wechat: load private key: %w", err)
 	}
 
-	// 初始化 client
-	// WithWechatPayAutoAuthCipher 一次性完成：
-	// 1. 注册请求签名（使用商户私钥）
-	// 2. 注册应答验签（自动下载并定时刷新平台证书）
-	// 3. 注册敏感信息加解密
-	client, err := core.NewClient(
-		ctx,
-		option.WithWechatPayAutoAuthCipher(
-			cfg.MchID,
-			cfg.MchCertSerialNumber,
-			privateKey,
-			cfg.MchAPIv3Key,
-		),
-	)
+	// 根据配置自动选择验签模式：配置了微信支付公钥则走公钥模式，否则走平台证书模式。
+	// 两种 AuthCipher 都一次性完成请求签名、应答验签与敏感信息加解密的注册。
+	clientOption, verifier, err := buildAuthCipher(cfg, privateKey)
+	if err != nil {
+		return nil, err
+	}
+
+	client, err := core.NewClient(ctx, clientOption)
 	if err != nil {
 		return nil, fmt.Errorf("wechat: init client: %w", err)
 	}
@@ -219,35 +270,48 @@ func NewProviderWithConfig(ctx context.Context, cfg *Config) (*Provider, error) 
 		privateKey: privateKey,
 	}
 
-	// ===== 初始化回调通知处理器 =====
-	//
-	// 生产环境中必须配置以下方式之一（取消注释并填入你的证书/公钥路径）：
-	//
-	// 方式1：使用本地管理的微信支付平台证书
-	//
-	wechatPayCert, err := resolvePlatformCertificate(cfg)
-	if err != nil {
-		return nil, fmt.Errorf("wechat: load platform cert: %w", err)
-	}
-	certificateVisitor := core.NewCertificateMapWithList([]*x509.Certificate{wechatPayCert})
-	p.notifyHandler, err = notify.NewRSANotifyHandler(
-		cfg.MchAPIv3Key,
-		verifiers.NewSHA256WithRSAVerifier(certificateVisitor),
-	)
+	// 回调通知处理器：使用与请求验签一致的 verifier。
+	p.notifyHandler, err = notify.NewRSANotifyHandler(cfg.MchAPIv3Key, verifier)
 	if err != nil {
 		return nil, fmt.Errorf("wechat: init notify handler: %w", err)
 	}
 
-	//
-	// 方式2：使用 CombinedVerifier（同时支持证书和公钥，适合过渡期）
-	//
-	//  p.notifyHandler, err = notify.NewRSANotifyHandler(
-	//      cfg.MchAPIv3Key,
-	//      verifiers.NewSHA256WithRSACombinedVerifier(
-	//          certificateVisitor, wechatPayPublicKeyID, *wechatPayPublicKey),
-	//  )
-
 	return p, nil
+}
+
+// buildAuthCipher 按配置选择验签模式，返回 Client 初始化选项与回调验签器。
+//
+// 公钥模式使用 option.WithWechatPayPublicKeyAuthCipher + NewSHA256WithRSAPubkeyVerifier；
+// 平台证书模式使用 option.WithWechatPayAutoAuthCipher（自动下载并轮转平台证书）
+// + NewSHA256WithRSAVerifier。
+func buildAuthCipher(cfg *Config, privateKey *rsa.PrivateKey) (core.ClientOption, auth.Verifier, error) {
+	if cfg.usePublicKey() {
+		publicKey, err := resolvePublicKey(cfg)
+		if err != nil {
+			return nil, nil, fmt.Errorf("wechat: load public key: %w", err)
+		}
+		opt := option.WithWechatPayPublicKeyAuthCipher(
+			cfg.MchID,
+			cfg.MchCertSerialNumber,
+			privateKey,
+			cfg.WechatPayPublicKeyID,
+			publicKey,
+		)
+		return opt, verifiers.NewSHA256WithRSAPubkeyVerifier(cfg.WechatPayPublicKeyID, *publicKey), nil
+	}
+
+	wechatPayCert, err := resolvePlatformCertificate(cfg)
+	if err != nil {
+		return nil, nil, fmt.Errorf("wechat: load platform cert: %w", err)
+	}
+	certificateVisitor := core.NewCertificateMapWithList([]*x509.Certificate{wechatPayCert})
+	opt := option.WithWechatPayAutoAuthCipher(
+		cfg.MchID,
+		cfg.MchCertSerialNumber,
+		privateKey,
+		cfg.MchAPIv3Key,
+	)
+	return opt, verifiers.NewSHA256WithRSAVerifier(certificateVisitor), nil
 }
 
 // Channel 实现 paymgr.Provider 接口.
@@ -863,5 +927,18 @@ func resolvePlatformCertificate(cfg *Config) (*x509.Certificate, error) {
 		return utils.LoadCertificateWithPath(cfg.WechatPayCertificatePath)
 	default:
 		return nil, fmt.Errorf("missing platform certificate")
+	}
+}
+
+func resolvePublicKey(cfg *Config) (*rsa.PublicKey, error) {
+	switch {
+	case cfg.WechatPayPublicKey != nil:
+		return cfg.WechatPayPublicKey, nil
+	case cfg.WechatPayPublicKeyPEM != "":
+		return utils.LoadPublicKey(cfg.WechatPayPublicKeyPEM)
+	case cfg.WechatPayPublicKeyPath != "":
+		return utils.LoadPublicKeyWithPath(cfg.WechatPayPublicKeyPath)
+	default:
+		return nil, fmt.Errorf("missing wechat pay public key")
 	}
 }

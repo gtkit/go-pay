@@ -212,6 +212,12 @@ provider, err := wechat.NewProvider(
 | `wechat.WithPlatformCertificatePath(path)` | 通过文件路径设置微信支付平台证书 |
 | `wechat.WithPlatformCertificatePEM(pem)` | 通过 PEM 文本设置微信支付平台证书 |
 | `wechat.WithPlatformCertificate(cert)` | 直接设置已解析的平台证书对象 |
+| `wechat.WithPublicKeyID(keyID)` | 设置微信支付公钥 ID（形如 `PUB_KEY_ID_xxx`）|
+| `wechat.WithPublicKeyPath(path)` | 通过文件路径设置微信支付公钥 |
+| `wechat.WithPublicKeyPEM(pem)` | 通过 PEM 文本设置微信支付公钥 |
+| `wechat.WithPublicKey(key)` | 直接设置已解析的公钥对象 |
+
+> **验签模式自动切换**：配置了公钥 ID 与公钥来源之一时，自动启用「微信支付公钥」验签，不再加载平台证书（适用于 2024 年起只下发公钥的新进件商户）；否则沿用平台证书模式。两种模式互斥，**公钥优先**。注意：公钥模式下商户私钥与商户证书序列号仍必填（用于请求签名）。
 
 ### 6.2 必填信息
 
@@ -224,7 +230,7 @@ provider, err := wechat.NewProvider(
 | `MchCertSerialNumber` | 是 | 商户证书序列号 |
 | `MchAPIv3Key` | 是 | APIv3 密钥，主要用于敏感信息解密和回调解密 |
 | 商户私钥 | 三选一 | 路径 / PEM 文本 / `*rsa.PrivateKey` |
-| 微信平台证书 | 三选一 | 路径 / PEM 文本 / `*x509.Certificate` |
+| 平台证书 **或** 公钥 | 二选一模式 | 平台证书：路径 / PEM 文本 / `*x509.Certificate`；公钥：公钥 ID + 路径 / PEM 文本 / `*rsa.PublicKey` |
 
 ### 6.3 配置文件映射示例
 
