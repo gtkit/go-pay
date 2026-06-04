@@ -7,6 +7,7 @@
 ### Added
 
 - 微信支付新增「微信支付公钥」验签模式：配置公钥 ID 与公钥（路径 / PEM / `*rsa.PublicKey`）即自动启用，适配 2024 年起只下发公钥的新进件商户。新增 `wechat.WithPublicKeyID` / `WithPublicKeyPath` / `WithPublicKeyPEM` / `WithPublicKey` 选项，与现有平台证书选项二选一、公钥优先
+- 微信支付 `Config.Validate()` 增加 `MchAPIv3Key` 必须为 32 字节的校验，将原本延迟到初始化阶段的 `crypto/aes: invalid key size` 错误前移为明确提示
 
 ### Changed
 

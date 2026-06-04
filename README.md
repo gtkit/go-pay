@@ -228,7 +228,7 @@ provider, err := wechat.NewProvider(
 | `AppID` | 是 | 微信应用 `appid` |
 | `MchID` | 是 | 微信商户号 |
 | `MchCertSerialNumber` | 是 | 商户证书序列号 |
-| `MchAPIv3Key` | 是 | APIv3 密钥，主要用于敏感信息解密和回调解密 |
+| `MchAPIv3Key` | 是 | APIv3 密钥，主要用于敏感信息解密和回调解密，**必须正好 32 字节** |
 | 商户私钥 | 三选一 | 路径 / PEM 文本 / `*rsa.PrivateKey` |
 | 平台证书 **或** 公钥 | 二选一模式 | 平台证书：路径 / PEM 文本 / `*x509.Certificate`；公钥：公钥 ID + 路径 / PEM 文本 / `*rsa.PublicKey` |
 

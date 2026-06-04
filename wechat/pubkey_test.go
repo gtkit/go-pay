@@ -127,6 +127,38 @@ func TestPublicKeyOptions(t *testing.T) {
 	}
 }
 
+func TestConfigValidateAPIv3KeyLength(t *testing.T) {
+	priv := testPrivateKey(t)
+
+	tests := []struct {
+		name    string
+		key     string
+		wantErr bool
+	}{
+		{name: "正好32字节通过", key: "0123456789abcdef0123456789abcdef", wantErr: false},
+		{name: "33字节报错", key: "0123456789abcdef0123456789abcdefX", wantErr: true},
+		{name: "31字节报错", key: "0123456789abcdef0123456789abcde", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := baseConfig(priv)
+			cfg.MchAPIv3Key = tt.key
+			cfg.WechatPayCertificatePEM = "pem" // 满足验签侧二选一
+			err := cfg.Validate()
+			if tt.wantErr {
+				if err == nil || !strings.Contains(err.Error(), "must be exactly 32 bytes") {
+					t.Fatalf("Validate() error = %v, want 32 bytes error", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Validate() error = %v, want nil", err)
+			}
+		})
+	}
+}
+
 func TestConfigUsePublicKey(t *testing.T) {
 	tests := []struct {
 		name string

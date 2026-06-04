@@ -98,11 +98,14 @@ func (c *Config) Validate() error {
 	if c.MchAPIv3Key == "" {
 		return fmt.Errorf("wechat: mch_apiv3_key is required")
 	}
+	if len(c.MchAPIv3Key) != 32 {
+		return fmt.Errorf("wechat: mch_apiv3_key must be exactly 32 bytes, got %d", len(c.MchAPIv3Key))
+	}
 	if c.MchPrivateKey == nil && c.MchPrivateKeyPEM == "" && c.MchPrivateKeyPath == "" {
 		return fmt.Errorf("wechat: mch_private_key, mch_private_key_pem or mch_private_key_path is required")
 	}
 	hasCert := c.WechatPayCertificate != nil || c.WechatPayCertificatePEM != "" || c.WechatPayCertificatePath != ""
-	hasPublicKey := c.WechatPayPublicKey != nil || c.WechatPayPublicKeyPEM != "" || c.WechatPayPublicKeyPath != ""
+	hasPublicKey := c.hasPublicKeySource()
 	if hasPublicKey && c.WechatPayPublicKeyID == "" {
 		return fmt.Errorf("wechat: wechat_pay_public_key_id is required when a wechat pay public key is provided")
 	}
@@ -113,12 +116,16 @@ func (c *Config) Validate() error {
 	return nil
 }
 
+// hasPublicKeySource 报告是否提供了微信支付公钥来源（对象 / PEM / 路径任一）。
+func (c *Config) hasPublicKeySource() bool {
+	return c.WechatPayPublicKey != nil || c.WechatPayPublicKeyPEM != "" || c.WechatPayPublicKeyPath != ""
+}
+
 // usePublicKey 报告是否启用微信支付公钥验签模式。
 //
 // 配置了公钥 ID 且提供了公钥来源之一时返回 true，否则沿用平台证书模式。
 func (c *Config) usePublicKey() bool {
-	return c.WechatPayPublicKeyID != "" &&
-		(c.WechatPayPublicKey != nil || c.WechatPayPublicKeyPEM != "" || c.WechatPayPublicKeyPath != "")
+	return c.WechatPayPublicKeyID != "" && c.hasPublicKeySource()
 }
 
 // WithAppID 设置微信应用 AppID。
