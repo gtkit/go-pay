@@ -66,7 +66,7 @@ go get github.com/gtkit/go-pay
 ```go
 paymgr.ChannelWechat   // 值为 "wxpay"      微信 V3
 paymgr.ChannelAlipay   // 值为 "alipay"     支付宝
-paymgr.ChannelWechatV2 // 值为 "wxpayv2"    微信 V2 扩展点占位（v1.3.0+，本库未实装；调用方按需自行实现 paymgr.Provider 接口）
+paymgr.ChannelWechatV2 // 值为 "wxpayv2"    微信 V2（XML 协议），由内置 wechat/v2 包实现，见第 14 章
 ```
 
 ### 3.2 交易类型
@@ -83,7 +83,8 @@ paymgr.TradeTypePage   // PC 网页支付 / 支付宝收银台
 
 | 渠道 | 支持的交易类型 |
 | --- | --- |
-| 微信支付 | `app`、`native`、`jsapi`、`h5` |
+| 微信支付 V3 | `app`、`native`、`jsapi`、`h5` |
+| 微信支付 V2 | `app`、`native`、`jsapi`、`h5` |
 | 支付宝 | `native`、`jsapi`、`app`、`h5`、`page` |
 
 如果传入未实现的类型，会返回 `paymgr.ErrUnsupportedType`。
@@ -1178,55 +1179,60 @@ if errors.As(err, &chErr) {
 1. 把证书、密钥、回调地址抽到你自己的配置系统里
 2. 在订单服务里封装一层业务适配，把 `go-pay` 的统一请求/响应转换成你自己的领域对象
 
-## 14. 微信 V2 接入扩展点
+## 14. 微信 V2 接入
 
-本库**不实装**微信 V2 协议（YAGNI 原则——V2 是微信维护期协议，新接入应使用 V3）。但 `paymgr` 暴露了 `ChannelWechatV2` 常量作为扩展点占位，业务方如有 V2 商户号需求，可在自己的项目里实现 `paymgr.Provider` 接口并注册到 manager。
+针对仅支持 V2（XML 协议）的老商户号，本库内置 `wechat/v2` 包，以 `paymgr.ChannelWechatV2`（`wxpayv2`）实现 `paymgr.Provider`，与 V3、支付宝共用同一抽象层。**新接入仍应优先使用 V3**——V2 是微信维护期协议。
 
-骨架示例：
+### 14.1 创建与注册
 
 ```go
-package mywechatv2
-
 import (
 	"context"
-	"net/http"
 
 	"github.com/gtkit/go-pay/paymgr"
+	v2 "github.com/gtkit/go-pay/wechat/v2"
 )
 
-// MyV2Provider 实现 paymgr.Provider 接口对接微信 V2 协议。
-// 推荐底层使用 github.com/go-pay/gopay/wechat（V2 子包，内置 ParseNotify / VerifySign 等）。
-type MyV2Provider struct {
-	// ... 商户号、APIKey 等
+provider, err := v2.NewProvider(ctx,
+	v2.WithAppID("wxYOUR_APPID"),
+	v2.WithMerchant("YOUR_MCH_ID", "<32位 V2 API 密钥>"),
+	v2.WithNotifyURL("https://example.com/wechat/notify"),
+	// 退款必须配置商户 API 证书（二选一）：
+	v2.WithCertPath("apiclient_cert.pem", "apiclient_key.pem"),
+	// v2.WithCertPEM(certPEM, keyPEM),
+)
+if err != nil {
+	// 处理初始化错误
 }
 
-func (p *MyV2Provider) Channel() paymgr.Channel { return paymgr.ChannelWechatV2 }
-
-func (p *MyV2Provider) UnifiedOrder(ctx context.Context, req *paymgr.UnifiedOrderRequest) (*paymgr.UnifiedOrderResponse, error) {
-	// 调用 gopay/wechat（V2）的 UnifiedOrder
-	return nil, nil
-}
-
-func (p *MyV2Provider) QueryOrder(ctx context.Context, req *paymgr.QueryOrderRequest) (*paymgr.QueryOrderResponse, error) { return nil, nil }
-func (p *MyV2Provider) CloseOrder(ctx context.Context, req *paymgr.CloseOrderRequest) error                                  { return nil }
-func (p *MyV2Provider) Refund(ctx context.Context, req *paymgr.RefundRequest) (*paymgr.RefundResponse, error)               { return nil, nil }
-func (p *MyV2Provider) QueryRefund(ctx context.Context, req *paymgr.QueryRefundRequest) (*paymgr.QueryRefundResponse, error){ return nil, nil }
-func (p *MyV2Provider) ParseNotify(ctx context.Context, r *http.Request) (*paymgr.NotifyResult, error)                       { return nil, nil }
-func (p *MyV2Provider) ParseRefundNotify(ctx context.Context, r *http.Request) (*paymgr.RefundNotifyResult, error)           { return nil, nil }
-func (p *MyV2Provider) ACKNotify(w http.ResponseWriter)                                                                       {}
+mgr.Register(provider)
+// 之后 mgr.UnifiedOrder(ctx, paymgr.ChannelWechatV2, req) 路由到 V2
 ```
 
-注册到 manager：
+> **密钥区别**：`WithMerchant` 的第二个参数是商户平台的 **V2 API 密钥（32 位）**，与 V3 的 APIv3 密钥（`wechat.Config.MchAPIv3Key`）是两个不同的密钥，不可混用。
 
-```go
-mgr.Register(&mywechatv2.MyV2Provider{...})
-// 之后 mgr.UnifiedOrder(ctx, paymgr.ChannelWechatV2, req) 会路由到该 provider
-```
+### 14.2 覆盖的方法
 
-为什么不预先实装：
-- V2 是微信维护期协议，**新接入应使用 V3**；微信不再为 V2 增加新功能
-- 同时维护 V2 和 V3 双栈会扩大库的导出面积与测试矩阵，违反「导出面能小则小」原则
-- 业务方如有 V2 商户号，自己实装 1 个独立 provider（约 100-200 行代码）即可，本库通过接口扩展点已留好对接位
+| 方法 | V2 接口 | 说明 |
+|------|---------|------|
+| `UnifiedOrder` | `/pay/unifiedorder` | 支持 APP / JSAPI / Native / H5；APP、JSAPI 自动生成调起支付二次签名 |
+| `QueryOrder` | `/pay/orderquery` | `trade_state` 映射为统一交易状态 |
+| `CloseOrder` | `/pay/closeorder` | |
+| `Refund` | `/secapi/pay/refund` | 走商户证书双向 TLS |
+| `QueryRefund` | `/pay/refundquery` | 按 `out_refund_no` 匹配退款明细下标 |
+| `ParseNotify` | 支付回调 | XML 验签后映射结果 |
+| `ParseRefundNotify` | 退款回调 | AES-256-ECB 解密 `req_info` |
+| `ACKNotify` | 应答 | 回写 `<xml>...SUCCESS...</xml>` |
+
+下单二次签名结果：APP 写入 `UnifiedOrderResponse.AppParams`，JSAPI/小程序写入 `JSAPIParams`，均为可直接下发给客户端的 JSON 字符串。
+
+### 14.3 注意事项
+
+- **统一下单必填 `ClientIP`**：V2 `spbill_create_ip` 对所有交易类型必填，缺失返回 `paymgr.ErrInvalidParam`。
+- **退款必须配置商户证书**：未配置 `apiclient_cert` / `apiclient_key` 时 `Refund` 返回明确错误且不发请求；查询、关单、下单等普通接口无需证书。
+- **签名算法可配**：默认 MD5，可用 `v2.WithSignType(v2.SignTypeHMACSHA256)` 切换；下单签名与 JSAPI 二次签名的 `signType` 自动保持一致。
+- **支付通知验签回退 MD5**：微信 V2 支付结果通知历史上固定用 MD5 且常不回传 `sign_type`，故 `ParseNotify` 在报文未声明 `sign_type` 时回退 MD5 验签（即便 Provider 配置为 HMAC-SHA256），贴合微信网关实际行为。
+- **零新增依赖**：HTTP 用标准库 `net/http`，随机串复用已依赖的 `wechatpay-go/utils`，JSON 复用已依赖的 `gtkit/json`。
 
 ## 15. v1.4.0 升级指南
 
@@ -1247,7 +1253,7 @@ mgr.Register(&mywechatv2.MyV2Provider{...})
 
 ### 15.3 微信 V2 兼容（可选）
 
-`paymgr.ChannelWechatV2` 常量已暴露。**仅当你有 V2 商户号需求**才需要按第 14 章扩展点接入；否则忽略即可。
+微信 V2 渠道现已内置 `wechat/v2` 包（见第 14 章）。**仅当你有 V2 商户号需求**才需要创建并注册 `wechat/v2` Provider；否则忽略即可，对现有 V3 与支付宝无任何影响。
 
 ### 15.4 v1.3.x 路线调整说明
 
