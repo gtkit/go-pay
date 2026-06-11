@@ -75,10 +75,11 @@ func TestFindRefundIndex(t *testing.T) {
 		"out_refund_no_0": "R-A",
 		"out_refund_no_1": "R-B",
 	}
-	if got := findRefundIndex(m, "R-B"); got != "1" {
-		t.Errorf("findRefundIndex = %q, want 1", got)
+	if got, ok := findRefundIndex(m, "R-B"); !ok || got != "1" {
+		t.Errorf("findRefundIndex = %q, %v, want 1, true", got, ok)
 	}
-	if got := findRefundIndex(m, "R-NOTFOUND"); got != "0" {
-		t.Errorf("findRefundIndex fallback = %q, want 0", got)
+	// 未命中必须显式报告，调用方据此返回 ErrOrderNotFound，不得回退取第 0 笔
+	if got, ok := findRefundIndex(m, "R-NOTFOUND"); ok {
+		t.Errorf("findRefundIndex miss = %q, %v, want ok=false", got, ok)
 	}
 }

@@ -20,7 +20,9 @@ const (
 
 // ResolveRequest 描述一次聚合支付分流请求。
 type ResolveRequest struct {
-	UserAgent       string
+	UserAgent string
+	// SelectedChannel 浏览器环境下用户选择的渠道，
+	// 合法取值为 paymgr.ChannelWechat / paymgr.ChannelAlipay。
 	SelectedChannel paymgr.Channel
 	OpenID          string
 
@@ -47,6 +49,11 @@ func NewService(mgr *paymgr.Manager) *Service {
 }
 
 // Resolve 按入口环境和用户选择决定聚合支付下一步动作。
+//
+// 注意：BuildUnifiedOrder 返回的请求中 TradeType 会被强制覆盖为分流结果；
+// 微信环境下请求未填 OpenID 时会回填 ResolveRequest.OpenID。
+// 全部纯校验在执行 BuildUnifiedOrder 回调之前完成——回调通常带落库等
+// 副作用，配置错误时不会产生脏数据。
 func (s *Service) Resolve(ctx context.Context, req *ResolveRequest) (*ResolveResult, error) {
 	if req == nil {
 		return nil, fmt.Errorf("%w: resolve request is required", paymgr.ErrInvalidParam)
@@ -70,6 +77,9 @@ func (s *Service) Resolve(ctx context.Context, req *ResolveRequest) (*ResolveRes
 	if req.BuildUnifiedOrder == nil {
 		return nil, ErrMissingOrderBuilder
 	}
+	if s == nil || s.mgr == nil {
+		return nil, fmt.Errorf("%w: aggregate service manager is required", paymgr.ErrInvalidParam)
+	}
 
 	orderReq, err := req.BuildUnifiedOrder(channel, tradeType)
 	if err != nil {
@@ -77,9 +87,6 @@ func (s *Service) Resolve(ctx context.Context, req *ResolveRequest) (*ResolveRes
 	}
 	if orderReq == nil {
 		return nil, fmt.Errorf("%w: build unified order returned nil request", paymgr.ErrInvalidParam)
-	}
-	if s == nil || s.mgr == nil {
-		return nil, fmt.Errorf("%w: aggregate service manager is required", paymgr.ErrInvalidParam)
 	}
 
 	orderReq.TradeType = tradeType

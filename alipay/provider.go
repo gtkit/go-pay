@@ -16,6 +16,8 @@ import (
 )
 
 // Config 支付宝配置.
+//
+// Config 含应用私钥等敏感凭据，请勿整体打印或写入日志。
 type Config struct {
 	AppID          string // 支付宝应用 ID
 	PrivateKey     string // 应用私钥内容
@@ -163,6 +165,8 @@ func NewProvider(opts ...Option) (*Provider, error) {
 }
 
 // NewProviderWithConfig 使用结构体配置创建支付宝支付提供者。
+//
+// 传入的 cfg 会被值拷贝，Provider 构造后修改原 Config 不影响其行为。
 func NewProviderWithConfig(cfg *Config) (*Provider, error) {
 	if cfg == nil {
 		return nil, fmt.Errorf("alipay: config is required")
@@ -170,13 +174,18 @@ func NewProviderWithConfig(cfg *Config) (*Provider, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
+	cfgCopy := *cfg
+	cfg = &cfgCopy
 
 	privateKey, err := resolvePrivateKey(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("alipay: load private key: %w", err)
 	}
 
-	client, err := alipay.New(cfg.AppID, privateKey, cfg.IsProduction)
+	// 显式注入带超时的 HTTP 客户端：SDK 默认使用无超时的 http.DefaultClient，
+	// 网关挂起时调用方 goroutine 会永久阻塞。30 秒与微信侧默认值一致。
+	client, err := alipay.New(cfg.AppID, privateKey, cfg.IsProduction,
+		alipay.WithHTTPClient(&http.Client{Timeout: 30 * time.Second}))
 	if err != nil {
 		return nil, fmt.Errorf("alipay: init client: %w", err)
 	}
@@ -232,13 +241,17 @@ func (p *Provider) UnifiedOrder(ctx context.Context, req *paymgr.UnifiedOrderReq
 	// 金额转换：分 -> 元（支付宝金额单位为元，保留两位小数）
 	amount := centToYuan(req.TotalAmount)
 
-	// 过期时间处理
+	// 过期时间处理：timeout_express 合法下限为 1m，已过期或不足 1 分钟时
+	// 静默忽略或生成 "0m" 都会掩盖调用方错误，直接报参数错误。
+	// 边界留 1 秒容差，调用方传"正好 1 分钟"不会因校验前的微秒流逝被误杀；
+	// 分钟数向下取整（不足整分钟按短算），订单存活期不会超过调用方要求。
 	var timeoutExpress string
 	if !req.ExpireAt.IsZero() {
-		duration := time.Until(req.ExpireAt)
-		if duration > 0 {
-			timeoutExpress = strconv.Itoa(int(duration.Minutes())) + "m"
+		remaining := time.Until(req.ExpireAt)
+		if remaining < time.Minute-time.Second {
+			return nil, fmt.Errorf("%w: expire_at must be at least 1 minute in the future", paymgr.ErrInvalidParam)
 		}
+		timeoutExpress = strconv.Itoa(max(int(remaining.Minutes()), 1)) + "m"
 	}
 
 	// 附加数据
@@ -291,6 +304,9 @@ func (p *Provider) UnifiedOrder(ctx context.Context, req *paymgr.UnifiedOrderReq
 		}
 		if timeoutExpress != "" {
 			trade.TimeoutExpress = timeoutExpress
+		}
+		if passbackParams != "" {
+			trade.PassbackParams = passbackParams
 		}
 
 		result, err := p.client.TradeCreate(ctx, trade)
@@ -443,6 +459,11 @@ func (p *Provider) CloseOrder(ctx context.Context, req *paymgr.CloseOrderRequest
 }
 
 // Refund 申请退款.
+//
+// 幂等语义：同一 OutRefundNo 重复调用时支付宝幂等返回成功（fund_change=N，
+// 本次未发生资金变化），本方法不视为错误；响应中的 RefundAmount 为本次
+// 请求的退款金额（支付宝返回的 refund_fee 是该笔交易的累计退款总额，
+// 语义不符，不采用）。需要精确对账时请使用 QueryRefund。
 func (p *Provider) Refund(ctx context.Context, req *paymgr.RefundRequest) (*paymgr.RefundResponse, error) {
 	trade := alipay.TradeRefund{}
 	trade.OutRequestNo = req.OutRefundNo
@@ -468,13 +489,11 @@ func (p *Provider) Refund(ctx context.Context, req *paymgr.RefundRequest) (*paym
 		)
 	}
 
-	refundAmount := yuanToCent(result.RefundFee)
-
 	return &paymgr.RefundResponse{
 		Channel:      paymgr.ChannelAlipay,
 		OutRefundNo:  req.OutRefundNo,
 		RefundID:     result.TradeNo, // 支付宝退款无单独退款号，使用交易号
-		RefundAmount: refundAmount,
+		RefundAmount: req.RefundAmount,
 	}, nil
 }
 
@@ -483,6 +502,10 @@ func (p *Provider) Refund(ctx context.Context, req *paymgr.RefundRequest) (*paym
 // 调用 alipay.trade.fastpay.refund.query，按退款请求号（OutRequestNo 即商户退款单号）查询。
 // 未查到退款记录时返回 ErrOrderNotFound。
 func (p *Provider) QueryRefund(ctx context.Context, req *paymgr.QueryRefundRequest) (*paymgr.QueryRefundResponse, error) {
+	if req == nil || req.OutRefundNo == "" {
+		return nil, fmt.Errorf("%w: out_refund_no is required", paymgr.ErrInvalidParam)
+	}
+
 	trade := alipay.TradeFastPayRefundQuery{}
 	trade.OutRequestNo = req.OutRefundNo
 	if req.TransactionID != "" {
@@ -547,6 +570,12 @@ func (p *Provider) ParseNotify(ctx context.Context, r *http.Request) (*paymgr.No
 	noti, err := p.client.DecodeNotification(ctx, r.Form)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", paymgr.ErrInvalidSign, err)
+	}
+
+	// 验签只证明通知出自支付宝；同一商户主体下多应用复用公钥时，
+	// 还需核对 app_id 防止其它应用的通知被错误接受。
+	if noti.AppId != "" && noti.AppId != p.cfg.AppID {
+		return nil, fmt.Errorf("%w: app_id mismatch, got %q", paymgr.ErrInvalidNotify, noti.AppId)
 	}
 
 	result := &paymgr.NotifyResult{

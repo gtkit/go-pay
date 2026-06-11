@@ -23,6 +23,7 @@ const maxResponseBytes = 1 << 20 // 1 MiB
 //
 // 注意：APIKey 是商户平台设置的 v2 API 密钥（32 位），
 // 与微信支付 v3 的 APIv3 密钥（MchAPIv3Key）是两个不同的密钥，不可混用。
+// Config 含 API 密钥与商户证书等敏感凭据，请勿整体打印或写入日志。
 type Config struct {
 	AppID     string   // 公众号/小程序/开放平台应用的 AppID
 	MchID     string   // 商户号（APP 二次签名中的 partnerid）
@@ -181,6 +182,9 @@ func NewProvider(ctx context.Context, opts ...Option) (*Provider, error) {
 }
 
 // NewProviderWithConfig 使用结构体配置创建 v2 Provider。
+//
+// 传入的 cfg 会被值拷贝，Provider 构造后修改原 Config 的字段不影响其行为；
+// 注入的 Client 指针指向的对象仍与调用方共享，构造后请勿原地修改。
 func NewProviderWithConfig(_ context.Context, cfg *Config) (*Provider, error) {
 	if cfg == nil {
 		return nil, fmt.Errorf("wechat/v2: config is required")
@@ -188,6 +192,8 @@ func NewProviderWithConfig(_ context.Context, cfg *Config) (*Provider, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
+	cfgCopy := *cfg
+	cfg = &cfgCopy
 
 	baseURL := cfg.BaseURL
 	if baseURL == "" {
@@ -286,6 +292,11 @@ func (p *Provider) doRequest(ctx context.Context, client *http.Client, path stri
 		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxResponseBytes))
 		_ = resp.Body.Close()
 	}()
+
+	// 网关异常（502/503 等）时 body 通常不是 XML，先报状态码保留排障信息。
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("wechat/v2: unexpected http status %d", resp.StatusCode)
+	}
 
 	data, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
 	if err != nil {

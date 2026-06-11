@@ -8,12 +8,13 @@ import (
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/gtkit/go-pay/paymgr"
+	"github.com/gtkit/json"
 
 	"time"
 
@@ -32,6 +33,8 @@ import (
 )
 
 // Config 微信支付配置
+//
+// Config 含商户私钥与 APIv3 密钥等敏感凭据，请勿整体打印或写入日志。
 type Config struct {
 	AppID                    string            // 开放平台应用的 appid（微信开放平台注册的移动应用）
 	MchID                    string            // 商户号
@@ -245,6 +248,9 @@ func NewProvider(ctx context.Context, opts ...Option) (*Provider, error) {
 }
 
 // NewProviderWithConfig 使用结构体配置创建微信支付提供者。
+//
+// 传入的 cfg 会被值拷贝，Provider 构造后修改原 Config 的字段不影响其行为；
+// 指针字段（私钥、证书、公钥）指向的对象仍与调用方共享，构造后请勿原地修改。
 func NewProviderWithConfig(ctx context.Context, cfg *Config) (*Provider, error) {
 	if cfg == nil {
 		return nil, fmt.Errorf("wechat: config is required")
@@ -252,6 +258,8 @@ func NewProviderWithConfig(ctx context.Context, cfg *Config) (*Provider, error) 
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
+	cfgCopy := *cfg
+	cfg = &cfgCopy
 
 	// 加载商户私钥
 	privateKey, err := resolvePrivateKey(cfg)
@@ -370,14 +378,17 @@ func (p *Provider) UnifiedOrder(ctx context.Context, req *paymgr.UnifiedOrderReq
 		if err != nil {
 			return nil, wrapWechatError(err)
 		}
-		resp.PrepayID = *result.PrepayId
+		resp.PrepayID = derefString(result.PrepayId)
 
-		// 生成 APP 调起支付的签名参数
-		appParams, err := p.buildAppPayParams(*result.PrepayId)
-		if err != nil {
-			return nil, fmt.Errorf("wechat: build app pay params: %w", err)
+		// 生成 APP 调起支付的签名参数；prepay_id 缺失时不签名，
+		// 避免下发一份签了名但必然调起失败的空参数
+		if resp.PrepayID != "" {
+			appParams, err := p.buildAppPayParams(resp.PrepayID)
+			if err != nil {
+				return nil, fmt.Errorf("wechat: build app pay params: %w", err)
+			}
+			resp.AppParams = appParams
 		}
-		resp.AppParams = appParams
 
 	case paymgr.TradeTypeJSAPI:
 		if req.OpenID == "" {
@@ -406,11 +417,13 @@ func (p *Provider) UnifiedOrder(ctx context.Context, req *paymgr.UnifiedOrderReq
 		}
 		resp.PrepayID = derefString(result.PrepayId)
 
-		jsapiParams, err := p.buildJSAPIPayParams(resp.PrepayID)
-		if err != nil {
-			return nil, fmt.Errorf("wechat: build jsapi pay params: %w", err)
+		if resp.PrepayID != "" {
+			jsapiParams, err := p.buildJSAPIPayParams(resp.PrepayID)
+			if err != nil {
+				return nil, fmt.Errorf("wechat: build jsapi pay params: %w", err)
+			}
+			resp.JSAPIParams = jsapiParams
 		}
-		resp.JSAPIParams = jsapiParams
 
 	case paymgr.TradeTypeNative:
 		svc := native.NativeApiService{Client: p.client}
@@ -430,7 +443,7 @@ func (p *Provider) UnifiedOrder(ctx context.Context, req *paymgr.UnifiedOrderReq
 		if err != nil {
 			return nil, wrapWechatError(err)
 		}
-		resp.CodeURL = *result.CodeUrl
+		resp.CodeURL = derefString(result.CodeUrl)
 
 	case paymgr.TradeTypeH5:
 		if req.ClientIP == "" {
@@ -557,12 +570,15 @@ func (p *Provider) Refund(ctx context.Context, req *paymgr.RefundRequest) (*paym
 		return nil, wrapWechatError(err)
 	}
 
-	return &paymgr.RefundResponse{
-		Channel:      paymgr.ChannelWechat,
-		OutRefundNo:  derefString(result.OutRefundNo),
-		RefundID:     derefString(result.RefundId),
-		RefundAmount: derefInt64(result.Amount.Refund),
-	}, nil
+	resp := &paymgr.RefundResponse{
+		Channel:     paymgr.ChannelWechat,
+		OutRefundNo: derefString(result.OutRefundNo),
+		RefundID:    derefString(result.RefundId),
+	}
+	if result.Amount != nil {
+		resp.RefundAmount = derefInt64(result.Amount.Refund)
+	}
+	return resp, nil
 }
 
 // QueryRefund 查询退款
@@ -602,15 +618,26 @@ func (p *Provider) QueryRefund(ctx context.Context, req *paymgr.QueryRefundReque
 // 使用 pays.Transaction 通用结构体。
 func (p *Provider) ParseNotify(ctx context.Context, r *http.Request) (*paymgr.NotifyResult, error) {
 	if p.notifyHandler == nil {
-		return nil, fmt.Errorf("wechat: notify handler not initialized, " +
-			"please configure it in NewProvider (see comments for setup instructions)")
+		return nil, fmt.Errorf("wechat: notify handler not initialized")
 	}
 
 	// 解析并验签回调通知，解密后反序列化为 payments.Transaction
 	var transaction payments.Transaction
-	_, err := p.notifyHandler.ParseNotifyRequest(ctx, r, &transaction)
+	notifyReq, err := p.notifyHandler.ParseNotifyRequest(ctx, r, &transaction)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", paymgr.ErrInvalidNotify, err)
+	}
+
+	// 验签只证明通知出自微信支付；还需确认事件类型与商户/应用身份，
+	// 防止退款通知错投支付端点、或同商户号下其它应用的通知被错误接受。
+	if !strings.HasPrefix(notifyReq.EventType, "TRANSACTION.") {
+		return nil, fmt.Errorf("%w: unexpected event_type %q for payment notify", paymgr.ErrInvalidNotify, notifyReq.EventType)
+	}
+	if mchID := derefString(transaction.Mchid); mchID != "" && mchID != p.cfg.MchID {
+		return nil, fmt.Errorf("%w: mchid mismatch, got %q", paymgr.ErrInvalidNotify, mchID)
+	}
+	if appID := derefString(transaction.Appid); appID != "" && appID != p.cfg.AppID {
+		return nil, fmt.Errorf("%w: appid mismatch, got %q", paymgr.ErrInvalidNotify, appID)
 	}
 
 	result := &paymgr.NotifyResult{
@@ -671,13 +698,21 @@ type refundNotifyResource struct {
 // resource 解密后的 JSON 字段与支付通知不同（状态字段名为 refund_status）。
 func (p *Provider) ParseRefundNotify(ctx context.Context, r *http.Request) (*paymgr.RefundNotifyResult, error) {
 	if p.notifyHandler == nil {
-		return nil, fmt.Errorf("wechat: notify handler not initialized, " +
-			"please configure it in NewProvider (see comments for setup instructions)")
+		return nil, fmt.Errorf("wechat: notify handler not initialized")
 	}
 
 	var res refundNotifyResource
-	if _, err := p.notifyHandler.ParseNotifyRequest(ctx, r, &res); err != nil {
+	notifyReq, err := p.notifyHandler.ParseNotifyRequest(ctx, r, &res)
+	if err != nil {
 		return nil, fmt.Errorf("%w: %v", paymgr.ErrInvalidNotify, err)
+	}
+
+	// 校验事件类型与商户身份，防止支付通知错投退款端点或跨商户通知被接受。
+	if !strings.HasPrefix(notifyReq.EventType, "REFUND.") {
+		return nil, fmt.Errorf("%w: unexpected event_type %q for refund notify", paymgr.ErrInvalidNotify, notifyReq.EventType)
+	}
+	if res.Mchid != "" && res.Mchid != p.cfg.MchID {
+		return nil, fmt.Errorf("%w: mchid mismatch, got %q", paymgr.ErrInvalidNotify, res.Mchid)
 	}
 
 	result := &paymgr.RefundNotifyResult{

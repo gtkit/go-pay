@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"fmt"
 
 	"log"
 	"net/http"
@@ -118,12 +120,16 @@ func handleCreateOrder(w http.ResponseWriter, r *http.Request) {
 		OpenID    string           `json:"open_id"`    // 微信 JSAPI 必填
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
 		return
 	}
 
-	// 生成商户订单号（生产中应使用 Snowflake 或类似算法）
-	outTradeNo := "ORD" + time.Now().Format("20060102150405") + "001"
+	outTradeNo, err := newOutTradeNo()
+	if err != nil {
+		log.Printf("generate out_trade_no: %v", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
+		return
+	}
 
 	ctx := r.Context()
 	resp, err := payMgr.UnifiedOrder(ctx, req.Channel, &paymgr.UnifiedOrderRequest{
@@ -141,8 +147,9 @@ func handleCreateOrder(w http.ResponseWriter, r *http.Request) {
 		},
 	})
 	if err != nil {
+		// 详情只记日志：渠道错误含错误码与底层 cause，不能原样回给外部调用方
 		log.Printf("create order error: %v", err)
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "create order failed"})
 		return
 	}
 
@@ -173,7 +180,7 @@ func handleQueryOrder(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		log.Printf("query order error: %v", err)
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "query order failed"})
 		return
 	}
 
@@ -204,6 +211,9 @@ func handleAlipayNotify(w http.ResponseWriter, r *http.Request) {
 //  5. 回写 ACK
 func handleNotify(w http.ResponseWriter, r *http.Request, ch paymgr.Channel) {
 	ctx := r.Context()
+
+	// 限制回调请求体大小，防止异常大包耗尽内存
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 
 	result, err := payMgr.ParseNotify(ctx, ch, r)
 	if err != nil {
@@ -266,7 +276,7 @@ func handleQueryRefund(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		log.Printf("query refund error: %v", err)
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "query refund failed"})
 		return
 	}
 
@@ -281,6 +291,8 @@ func handleQueryRefund(w http.ResponseWriter, r *http.Request) {
 // 通过 handleAlipayNotify + 判断 TradeStatus == paymgr.TradeStatusRefunded 处理。
 func handleWechatRefundNotify(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
+
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 
 	result, err := payMgr.ParseRefundNotify(ctx, paymgr.ChannelWechat, r)
 	if err != nil {
@@ -327,7 +339,7 @@ func handleRefund(w http.ResponseWriter, r *http.Request) {
 		Reason       string         `json:"reason"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
 		return
 	}
 
@@ -342,7 +354,7 @@ func handleRefund(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		log.Printf("refund error: %v", err)
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "refund failed"})
 		return
 	}
 
@@ -368,10 +380,28 @@ func main() {
 	// 微信退款通知（支付宝的退款结果随 handleAlipayNotify 一并回来，不需要单独路由）
 	mux.HandleFunc("POST /api/v1/notify/refund/wechat", handleWechatRefundNotify)
 
+	srv := &http.Server{
+		Addr:              ":8080",
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
 	log.Println("server starting on :8080")
-	if err := http.ListenAndServe(":8080", mux); err != nil {
+	if err := srv.ListenAndServe(); err != nil {
 		log.Fatal(err)
 	}
+}
+
+// newOutTradeNo 生成演示用商户订单号（纳秒时间戳 + 随机后缀，避免同秒撞单）。
+// 生产环境应替换为 Snowflake 等全局唯一 ID 方案。
+func newOutTradeNo() (string, error) {
+	var b [4]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("ORD%d%x", time.Now().UnixNano(), b), nil
 }
 
 // writeJSON 写 JSON 响应

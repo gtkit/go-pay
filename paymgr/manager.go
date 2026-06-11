@@ -11,19 +11,20 @@ import (
 
 // Manager 支付管理器，统一管理多个支付渠道。
 //
-// Manager 可并发安全使用。运行时允许 Register / Deregister 与读操作并发执行。
+// Manager 可并发安全使用，零值即可直接使用。运行时允许 Register / Deregister
+// 与读操作并发执行。
 //
 // 使用方式:
 //
-//	mgr := payment.NewManager()
+//	mgr := paymgr.NewManager()
 //	mgr.Register(wechatProvider)
 //	mgr.Register(alipayProvider)
 //
 //	// 下单
-//	resp, err := mgr.UnifiedOrder(ctx, pay.ChannelWechat, req)
+//	resp, err := mgr.UnifiedOrder(ctx, paymgr.ChannelWechat, req)
 //
 //	// 处理回调（在 HTTP handler 中根据路由区分渠道）
-//	result, err := mgr.ParseNotify(ctx, pay.ChannelWechat, r)
+//	result, err := mgr.ParseNotify(ctx, paymgr.ChannelWechat, r)
 type Manager struct {
 	mu        sync.RWMutex
 	providers map[Channel]Provider
@@ -42,6 +43,9 @@ func NewManager() *Manager {
 func (m *Manager) Register(p Provider) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.providers == nil {
+		m.providers = make(map[Channel]Provider)
+	}
 	m.providers[p.Channel()] = p
 }
 
@@ -62,12 +66,14 @@ func (m *Manager) Deregister(ch Channel) bool {
 }
 
 // Provider 获取指定渠道的提供者.
+//
+// 渠道未注册时返回的错误满足 errors.Is(err, ErrChannelNotRegistered)。
 func (m *Manager) Provider(ch Channel) (Provider, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	p, ok := m.providers[ch]
 	if !ok {
-		return nil, fmt.Errorf("payment: channel %q not registered", ch)
+		return nil, fmt.Errorf("%w: %q", ErrChannelNotRegistered, ch)
 	}
 	return p, nil
 }
@@ -105,11 +111,8 @@ func (m *Manager) QueryOrder(ctx context.Context, ch Channel, req *QueryOrderReq
 
 // CloseOrder 关闭订单.
 func (m *Manager) CloseOrder(ctx context.Context, ch Channel, req *CloseOrderRequest) error {
-	if req == nil {
-		return fmt.Errorf("%w: close order request is required", ErrInvalidParam)
-	}
-	if req.OutTradeNo == "" {
-		return fmt.Errorf("%w: out_trade_no is required", ErrInvalidParam)
+	if err := req.Validate(); err != nil {
+		return err
 	}
 	p, err := m.Provider(ch)
 	if err != nil {

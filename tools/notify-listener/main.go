@@ -23,12 +23,12 @@
 //	GET  /return    同步跳转入口（浏览器支付完会跳转），返回简单提示页
 //	GET  /health    健康检查
 //
-// 工具保留在工作树本地使用，不入 git。
+// 仅限本地调试使用：dump 输出包含通知原文（买家 ID、金额等业务数据），
+// 请勿将本工具的日志接入采集系统。
 package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -43,6 +43,7 @@ import (
 
 	"github.com/gtkit/go-pay/alipay"
 	"github.com/gtkit/go-pay/paymgr"
+	"github.com/gtkit/json"
 )
 
 const (
@@ -156,8 +157,8 @@ func notifyHandler(p *alipay.Provider) http.HandlerFunc {
 		seq := notifyCount.Add(1)
 		fmt.Printf("\n[#%d] %s 收到 POST /notify\n", seq, time.Now().Format("15:04:05"))
 
-		// 把原始请求 body 也存一份，方便排查
-		bodyBytes, err := io.ReadAll(r.Body)
+		// 把原始请求 body 也存一份，方便排查（限 1 MiB，防异常大包）
+		bodyBytes, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))
 		if err != nil {
 			fmt.Printf("   ❌ 读取 body 失败: %v\n", err)
 			http.Error(w, "read body failed", http.StatusBadRequest)

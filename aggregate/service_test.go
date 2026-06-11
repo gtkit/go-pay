@@ -61,11 +61,13 @@ func TestResolveRequiresBuilderWhenOrderMustBeCreated(t *testing.T) {
 
 func TestResolveRequiresManager(t *testing.T) {
 	svc := NewService(nil)
+	builderCalls := 0
 
 	_, err := svc.Resolve(t.Context(), &ResolveRequest{
 		UserAgent:       "Mozilla/5.0 AlipayClient/10.5.96",
 		SelectedChannel: paymgr.ChannelAlipay,
 		BuildUnifiedOrder: func(ch paymgr.Channel, tradeType paymgr.TradeType) (*paymgr.UnifiedOrderRequest, error) {
+			builderCalls++
 			return &paymgr.UnifiedOrderRequest{
 				OutTradeNo:  "ORD-AGG-NIL",
 				TotalAmount: 100,
@@ -78,6 +80,9 @@ func TestResolveRequiresManager(t *testing.T) {
 	})
 	if !errors.Is(err, paymgr.ErrInvalidParam) {
 		t.Fatalf("Resolve() error = %v, want wrapped ErrInvalidParam", err)
+	}
+	if builderCalls != 0 {
+		t.Fatalf("BuildUnifiedOrder calls = %d, want 0", builderCalls)
 	}
 }
 

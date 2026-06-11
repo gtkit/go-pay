@@ -1,4 +1,4 @@
-// Package manager 提供统一支付接口抽象层。
+// Package paymgr 提供统一支付接口抽象层。
 //
 // 设计原则:
 //   - 微信支付使用官方 SDK: github.com/wechatpay-apiv3/wechatpay-go
@@ -143,13 +143,24 @@ type CloseOrderRequest struct {
 	OutTradeNo string // 商户订单号，必填
 }
 
+// Validate 校验关闭订单请求.
+func (r *CloseOrderRequest) Validate() error {
+	if r == nil {
+		return fmt.Errorf("%w: close order request is required", ErrInvalidParam)
+	}
+	if r.OutTradeNo == "" {
+		return fmt.Errorf("%w: out_trade_no is required", ErrInvalidParam)
+	}
+	return nil
+}
+
 // RefundRequest 退款请求.
 type RefundRequest struct {
 	OutTradeNo    string // 商户订单号（二选一）
 	TransactionID string // 渠道交易号（二选一）
 	OutRefundNo   string // 商户退款单号，必填，需保证唯一
 	RefundAmount  int64  // 退款金额，单位：分
-	TotalAmount   int64  // 原订单总金额，单位：分（支付宝需要）
+	TotalAmount   int64  // 原订单总金额，单位：分，必填
 	Reason        string // 退款原因
 	NotifyURL     string // 退款异步通知地址（可选）
 }
@@ -254,6 +265,9 @@ type NotifyResult struct {
 //
 // 所有支付渠道必须实现此接口，业务层只依赖此接口。
 // 设计上每个方法都接收 context.Context，支持超时控制和链路追踪。
+//
+// 并发契约：实现必须可被多个 goroutine 并发调用（Manager 会在锁外
+// 并发调用 Provider 的全部方法）。
 type Provider interface {
 	// Channel 返回当前提供者的支付渠道标识
 	Channel() Channel

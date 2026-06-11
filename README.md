@@ -548,7 +548,7 @@ type UnifiedOrderRequest struct {
 | `ReturnURL` | 否 | 支付宝 H5 / PC 页面支付同步跳转地址 |
 | `ClientIP` | 某些渠道场景需要 | 用户 IP；微信 H5 必填 |
 | `OpenID` | 某些渠道场景需要 | 微信 JSAPI 或支付宝买家标识场景 |
-| `ExpireAt` | 否 | 订单过期时间 |
+| `ExpireAt` | 否 | 订单过期时间；支付宝渠道要求距今至少 1 分钟，否则返回 `ErrInvalidParam` |
 | `Metadata` | 否 | 附加数据，回调时会带回 |
 
 #### 微信 APP 下单
@@ -890,6 +890,10 @@ fmt.Println(resp.RefundID)
 fmt.Println(resp.RefundAmount)
 ```
 
+注意（支付宝幂等语义）：同一 `OutRefundNo` 重复调用 `Refund`，支付宝会幂等返回成功
+（本次不再发生资金变化），本库不视为错误；`RefundResponse.RefundAmount` 始终为本次
+请求的退款金额，需要精确对账时请使用 `QueryRefund`。
+
 ### 9.5 查询退款 `QueryRefund`
 
 方法签名：
@@ -1006,6 +1010,11 @@ type NotifyResult struct {
 - `ParseNotify` 成功不代表业务已经处理完成，只代表验签和解析通过
 - 业务层必须自己做订单存在性校验、金额校验、状态幂等控制
 - `ACKNotify` 必须在业务确认处理完成后再回写
+- 验签之外，库会校验通知的事件类型与商户/应用身份（微信核对
+  `event_type` 前缀与解密后的 `mchid`/`appid`，微信 V2 核对报文
+  `appid`/`mch_id`，支付宝核对 `app_id`），不符返回
+  `paymgr.ErrInvalidNotify`——退款通知错投支付端点、同商户号下
+  其它应用的通知都会被拒绝
 
 不同平台的成功应答：
 
@@ -1085,7 +1094,7 @@ case paymgr.TradeStatusRefunded:
 如果调用时报错：
 
 ```text
-payment: channel "xxx" not registered
+payment: channel not registered: "xxx"
 ```
 
 说明你还没有执行：
@@ -1094,7 +1103,13 @@ payment: channel "xxx" not registered
 mgr.Register(provider)
 ```
 
-或者传错了渠道值。
+或者传错了渠道值。可用哨兵错误精确判断：
+
+```go
+if errors.Is(err, paymgr.ErrChannelNotRegistered) {
+	// 渠道未注册
+}
+```
 
 ### 10.2 请求参数校验失败
 
@@ -1171,7 +1186,8 @@ if errors.As(err, &chErr) {
 - 微信 Provider 当前覆盖 `app`、`jsapi`、`native`、`h5` 四种直连下单场景
 - 支付宝 Provider 覆盖 `app`、`jsapi`、`native`、`h5`、`page` 五种场景
 - 推荐用函数选项模式初始化，结构体配置作为兼容方式保留
-- 微信目前**仅支持 V3** 协议；如需 V2 商户号兼容，业务方可自行实现 `paymgr.Provider` 接口注册到 manager（详见第 14 章扩展点）
+- 微信 V2（XML 协议）商户号兼容由内置的 `wechat/v2` 包提供（详见第 14 章）；新接入优先使用 V3
+- 渠道 HTTP 客户端均带 30 秒超时（微信为 SDK 默认值，支付宝由本库显式注入），可通过 `context` 进一步收紧单次调用时限
 - 示例代码展示的是接入方式，不是可直接上线的完整业务代码
 
 如果你要在自己的业务项目中使用，通常下一步会做两件事：

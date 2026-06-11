@@ -7,15 +7,16 @@ import (
 
 // 哨兵错误，用于 errors.Is 判断
 var (
-	ErrInvalidParam    = errors.New("payment: invalid param")
-	ErrOrderNotFound   = errors.New("payment: order not found")
-	ErrOrderClosed     = errors.New("payment: order already closed")
-	ErrOrderPaid       = errors.New("payment: order already paid")
-	ErrRefundFailed    = errors.New("payment: refund failed")
-	ErrInvalidSign     = errors.New("payment: invalid signature")
-	ErrInvalidNotify   = errors.New("payment: invalid notification")
-	ErrUnsupportedType = errors.New("payment: unsupported trade type")
-	ErrNotSupported    = errors.New("payment: operation not supported by channel")
+	ErrInvalidParam         = errors.New("payment: invalid param")
+	ErrChannelNotRegistered = errors.New("payment: channel not registered")
+	ErrOrderNotFound        = errors.New("payment: order not found")
+	ErrOrderClosed          = errors.New("payment: order already closed")
+	ErrOrderPaid            = errors.New("payment: order already paid")
+	ErrRefundFailed         = errors.New("payment: refund failed")
+	ErrInvalidSign          = errors.New("payment: invalid signature")
+	ErrInvalidNotify        = errors.New("payment: invalid notification")
+	ErrUnsupportedType      = errors.New("payment: unsupported trade type")
+	ErrNotSupported         = errors.New("payment: operation not supported by channel")
 )
 
 // ChannelError 渠道级错误，包含渠道原始错误码和描述

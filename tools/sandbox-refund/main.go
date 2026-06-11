@@ -15,12 +15,11 @@
 //
 //	go run ./tools/sandbox-refund -out-trade-no SBX-PAGE-1778307815008432000
 //
-// 工具留作本地用，不入 git。
+// 仅限本地调试使用。
 package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -30,6 +29,7 @@ import (
 
 	"github.com/gtkit/go-pay/alipay"
 	"github.com/gtkit/go-pay/paymgr"
+	"github.com/gtkit/json"
 )
 
 const (
@@ -57,10 +57,10 @@ type checkResult struct {
 }
 
 type report struct {
-	GeneratedAt string        `json:"generated_at"`
+	GeneratedAt string         `json:"generated_at"`
 	Inputs      map[string]any `json:"inputs"`
-	Summary     summary       `json:"summary"`
-	Results     []checkResult `json:"results"`
+	Summary     summary        `json:"summary"`
+	Results     []checkResult  `json:"results"`
 }
 
 type summary struct {
@@ -127,7 +127,8 @@ func main() {
 		Reason:        *reason,
 	}))
 
-	// 等待 1 秒让支付宝异步推送退款回调
+	// 退款受理与退款单可查之间存在短暂延迟，等待 1 秒再查询，
+	// 避免 QueryRefund 因数据未就绪而误报不存在
 	time.Sleep(1 * time.Second)
 
 	rep.Results = append(rep.Results, doQueryRefund(ctx, provider, &paymgr.QueryRefundRequest{

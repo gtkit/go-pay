@@ -35,6 +35,12 @@ func (p *Provider) Channel() paymgr.Channel {
 // 成功后生成调起支付的二次签名，分别写入响应的 AppParams 与 JSAPIParams；
 // Native 返回 CodeURL，H5 返回 H5URL。v2 统一下单要求终端 IP，故 ClientIP 必填。
 func (p *Provider) UnifiedOrder(ctx context.Context, req *paymgr.UnifiedOrderRequest) (*paymgr.UnifiedOrderResponse, error) {
+	// 请求未提供 NotifyURL 时回退到配置级默认值；浅拷贝后填充，不修改调用方的 req。
+	if req != nil && req.NotifyURL == "" && p.cfg.NotifyURL != "" {
+		clone := *req
+		clone.NotifyURL = p.cfg.NotifyURL
+		req = &clone
+	}
 	if err := req.Validate(); err != nil {
 		return nil, err
 	}
@@ -47,17 +53,12 @@ func (p *Provider) UnifiedOrder(ctx context.Context, req *paymgr.UnifiedOrderReq
 		return nil, err
 	}
 
-	notifyURL := req.NotifyURL
-	if notifyURL == "" {
-		notifyURL = p.cfg.NotifyURL
-	}
-
 	params := map[string]string{
 		"body":             req.Subject,
 		"out_trade_no":     req.OutTradeNo,
 		"total_fee":        strconv.FormatInt(req.TotalAmount, 10),
 		"spbill_create_ip": req.ClientIP,
-		"notify_url":       notifyURL,
+		"notify_url":       req.NotifyURL,
 		"trade_type":       tradeType,
 	}
 	if !req.ExpireAt.IsZero() {
@@ -153,8 +154,8 @@ func (p *Provider) QueryOrder(ctx context.Context, req *paymgr.QueryOrderRequest
 
 // CloseOrder 关闭订单。
 func (p *Provider) CloseOrder(ctx context.Context, req *paymgr.CloseOrderRequest) error {
-	if req == nil || req.OutTradeNo == "" {
-		return fmt.Errorf("%w: out_trade_no is required", paymgr.ErrInvalidParam)
+	if err := req.Validate(); err != nil {
+		return err
 	}
 
 	_, err := p.doRequest(ctx, p.client, "/pay/closeorder", map[string]string{
@@ -171,7 +172,7 @@ func (p *Provider) Refund(ctx context.Context, req *paymgr.RefundRequest) (*paym
 		return nil, err
 	}
 	if p.refundClient == nil {
-		return nil, fmt.Errorf("wechat/v2: merchant certificate (apiclient_cert/apiclient_key) is required for refund")
+		return nil, fmt.Errorf("%w: wechat/v2: merchant certificate (apiclient_cert/apiclient_key) is required for refund", paymgr.ErrInvalidParam)
 	}
 
 	params := map[string]string{
@@ -217,7 +218,12 @@ func (p *Provider) QueryRefund(ctx context.Context, req *paymgr.QueryRefundReque
 		return nil, err
 	}
 
-	idx := findRefundIndex(result, req.OutRefundNo)
+	// v2 refundquery 单次最多返回 10 笔明细，目标退款单不在响应中时必须报错，
+	// 回退取第 0 笔会把别的退款单的状态/金额张冠李戴。
+	idx, ok := findRefundIndex(result, req.OutRefundNo)
+	if !ok {
+		return nil, fmt.Errorf("%w: refund %q not found in refundquery response", paymgr.ErrOrderNotFound, req.OutRefundNo)
+	}
 	return &paymgr.QueryRefundResponse{
 		Channel:       paymgr.ChannelWechatV2,
 		OutTradeNo:    result["out_trade_no"],
@@ -233,7 +239,8 @@ func (p *Provider) QueryRefund(ctx context.Context, req *paymgr.QueryRefundReque
 // ParseNotify 解析支付异步通知。
 //
 // 读取 v2 XML 通知、按 sign_type 验签后映射为 paymgr.NotifyResult。
-// result_code 为 SUCCESS 时交易状态为已支付，否则为异常。
+// result_code 为 SUCCESS 时交易状态为已支付，否则为异常，且失败原因
+// err_code / err_code_des 会写入 Metadata 便于排障。
 func (p *Provider) ParseNotify(_ context.Context, r *http.Request) (*paymgr.NotifyResult, error) {
 	m, err := readNotify(r)
 	if err != nil {
@@ -244,6 +251,9 @@ func (p *Provider) ParseNotify(_ context.Context, r *http.Request) (*paymgr.Noti
 	}
 	if !verifySign(m, p.cfg.APIKey, notifySignType(m)) {
 		return nil, fmt.Errorf("%w: wechat v2 notify sign mismatch", paymgr.ErrInvalidSign)
+	}
+	if err := p.checkNotifyIdentity(m); err != nil {
+		return nil, err
 	}
 
 	status := paymgr.TradeStatusError
@@ -266,7 +276,29 @@ func (p *Provider) ParseNotify(_ context.Context, r *http.Request) (*paymgr.Noti
 			result.Metadata = metadata
 		}
 	}
+	// 业务失败时保留失败原因，否则调用方只能抓原始报文排障。
+	if status == paymgr.TradeStatusError {
+		if result.Metadata == nil {
+			result.Metadata = make(map[string]string, 2)
+		}
+		result.Metadata["err_code"] = m["err_code"]
+		result.Metadata["err_code_des"] = m["err_code_des"]
+	}
 	return result, nil
+}
+
+// checkNotifyIdentity 比对通知报文的 appid / mch_id 与配置。
+//
+// 同一商户号常绑定多个应用且共用同一 v2 API 密钥，验签无法区分应用，
+// 必须核对身份字段防止其它应用的通知被错误接受（字段缺失时跳过比对）。
+func (p *Provider) checkNotifyIdentity(m map[string]string) error {
+	if appID := m["appid"]; appID != "" && appID != p.cfg.AppID {
+		return fmt.Errorf("%w: appid mismatch, got %q", paymgr.ErrInvalidNotify, appID)
+	}
+	if mchID := m["mch_id"]; mchID != "" && mchID != p.cfg.MchID {
+		return fmt.Errorf("%w: mch_id mismatch, got %q", paymgr.ErrInvalidNotify, mchID)
+	}
+	return nil
 }
 
 // ParseRefundNotify 解析退款异步通知。
@@ -281,6 +313,10 @@ func (p *Provider) ParseRefundNotify(_ context.Context, r *http.Request) (*paymg
 	}
 	if m["return_code"] != "SUCCESS" {
 		return nil, fmt.Errorf("%w: return_code=%s", paymgr.ErrInvalidNotify, m["return_code"])
+	}
+	// 外层 appid/mch_id 未参与签名，比对只防错投；防伪造由 req_info 解密保证。
+	if err := p.checkNotifyIdentity(m); err != nil {
+		return nil, err
 	}
 	reqInfo := m["req_info"]
 	if reqInfo == "" {
@@ -397,16 +433,16 @@ func notifySignType(m map[string]string) SignType {
 	return SignTypeMD5
 }
 
-// findRefundIndex 在退款查询响应中按 out_refund_no 定位明细下标，未命中返回 "0"。
-func findRefundIndex(m map[string]string, outRefundNo string) string {
+// findRefundIndex 在退款查询响应中按 out_refund_no 定位明细下标，未命中时 ok 为 false。
+func findRefundIndex(m map[string]string, outRefundNo string) (idx string, ok bool) {
 	count, _ := strconv.Atoi(m["refund_count"])
 	for i := range count {
 		s := strconv.Itoa(i)
 		if m["out_refund_no_"+s] == outRefundNo {
-			return s
+			return s, true
 		}
 	}
-	return "0"
+	return "", false
 }
 
 // parseInt64 将字符串解析为 int64，非法时返回 0。

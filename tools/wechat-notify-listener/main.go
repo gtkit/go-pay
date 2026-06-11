@@ -28,7 +28,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -42,6 +41,7 @@ import (
 
 	"github.com/gtkit/go-pay/paymgr"
 	"github.com/gtkit/go-pay/wechat"
+	"github.com/gtkit/json"
 )
 
 const (
@@ -170,7 +170,7 @@ func payNotifyHandler(p *wechat.Provider) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		seq := notifyCount.Add(1)
 		fmt.Printf("\n[#%d] %s 收到 POST /notify\n", seq, time.Now().Format("15:04:05"))
-		body := rewindBody(r)
+		body := rewindBody(w, r)
 		printBodyPreview(body)
 
 		result, err := p.ParseNotify(r.Context(), r)
@@ -203,7 +203,7 @@ func refundNotifyHandler(p *wechat.Provider) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		seq := notifyCount.Add(1)
 		fmt.Printf("\n[#%d] %s 收到 POST /refund-notify\n", seq, time.Now().Format("15:04:05"))
-		body := rewindBody(r)
+		body := rewindBody(w, r)
 		printBodyPreview(body)
 
 		result, err := p.ParseRefundNotify(r.Context(), r)
@@ -232,9 +232,10 @@ func refundNotifyHandler(p *wechat.Provider) http.HandlerFunc {
 	}
 }
 
-// rewindBody 读取并复位请求 body，使后续 ParseNotify 仍可读取。
-func rewindBody(r *http.Request) []byte {
-	body, err := io.ReadAll(r.Body)
+// rewindBody 读取并复位请求 body，使后续 ParseNotify 仍可读取（限 1 MiB，
+// 超限报错而非静默截断，避免截断 body 导致混淆的验签失败）。
+func rewindBody(w http.ResponseWriter, r *http.Request) []byte {
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))
 	if err != nil {
 		fmt.Printf("   ❌ 读取 body 失败: %v\n", err)
 		return nil

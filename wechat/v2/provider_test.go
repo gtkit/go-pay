@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"errors"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/gtkit/go-pay/paymgr"
@@ -291,8 +293,8 @@ func TestRefundMissingCert(t *testing.T) {
 	_, err = p.Refund(t.Context(), &paymgr.RefundRequest{
 		OutTradeNo: "ORD-1", OutRefundNo: "R-1", RefundAmount: 100, TotalAmount: 100,
 	})
-	if err == nil {
-		t.Fatal("Refund without cert error = nil, want error")
+	if !errors.Is(err, paymgr.ErrInvalidParam) {
+		t.Fatalf("Refund without cert error = %v, want ErrInvalidParam", err)
 	}
 }
 
@@ -443,5 +445,183 @@ func TestACKNotify(t *testing.T) {
 	}
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+}
+
+func TestUnifiedOrderNotifyURLFallback(t *testing.T) {
+	// req.NotifyURL 为空时回退到配置级 NotifyURL，且不原地修改调用方的 req
+	const cfgNotifyURL = "https://cfg.example.com/notify"
+	var gotReq map[string]string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		data, _ := io.ReadAll(r.Body)
+		gotReq, _ = decodeXML(data)
+		_, _ = w.Write(signedResponse(t, map[string]string{
+			"appid": testAppID, "mch_id": "10000100",
+			"prepay_id": "wx-prepay", "code_url": "weixin://wxpay/bizpayurl?pr=abc",
+			"trade_type": "NATIVE",
+		}))
+	}))
+	t.Cleanup(srv.Close)
+
+	p, err := NewProvider(t.Context(),
+		WithAppID(testAppID), WithMerchant("10000100", officialKey),
+		WithNotifyURL(cfgNotifyURL),
+		WithBaseURL(srv.URL), WithHTTPClient(srv.Client()),
+	)
+	if err != nil {
+		t.Fatalf("NewProvider: %v", err)
+	}
+
+	req := validOrder(paymgr.TradeTypeNative)
+	req.NotifyURL = ""
+	if _, err := p.UnifiedOrder(t.Context(), req); err != nil {
+		t.Fatalf("UnifiedOrder: %v", err)
+	}
+	if gotReq["notify_url"] != cfgNotifyURL {
+		t.Errorf("gateway notify_url = %q, want %q", gotReq["notify_url"], cfgNotifyURL)
+	}
+	if req.NotifyURL != "" {
+		t.Errorf("caller req.NotifyURL mutated to %q, want empty", req.NotifyURL)
+	}
+}
+
+func TestUnifiedOrderNotifyURLBothEmpty(t *testing.T) {
+	// req 与 cfg 均未提供 NotifyURL 时仍应校验失败
+	p := newServerProvider(t, nil) // newServerProvider 不配置 NotifyURL
+	req := validOrder(paymgr.TradeTypeNative)
+	req.NotifyURL = ""
+	if _, err := p.UnifiedOrder(t.Context(), req); !errors.Is(err, paymgr.ErrInvalidParam) {
+		t.Fatalf("error = %v, want ErrInvalidParam", err)
+	}
+}
+
+func TestQueryRefundNotFound(t *testing.T) {
+	// 响应含明细但 out_refund_no_0 不是目标退款单号，不得回退取第 0 笔
+	resp := signedResponse(t, map[string]string{
+		"appid": testAppID, "mch_id": "10000100",
+		"out_trade_no": "ORD-1", "transaction_id": "42000",
+		"refund_count":    "1",
+		"out_refund_no_0": "R-OTHER", "refund_id_0": "50001",
+		"refund_status_0": "SUCCESS", "refund_fee_0": "100",
+		"total_fee": "100",
+	})
+	p := newServerProvider(t, resp)
+
+	_, err := p.QueryRefund(t.Context(), &paymgr.QueryRefundRequest{OutRefundNo: "R-1"})
+	if !errors.Is(err, paymgr.ErrOrderNotFound) {
+		t.Fatalf("error = %v, want ErrOrderNotFound", err)
+	}
+}
+
+func TestParseNotifyIdentityMismatch(t *testing.T) {
+	// 验签合法但身份字段与配置不符的通知必须拒绝
+	tests := []struct {
+		name     string
+		override map[string]string
+	}{
+		{"appid_mismatch", map[string]string{"appid": "wx-other-app"}},
+		{"mch_id_mismatch", map[string]string{"mch_id": "1900000000"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			params := map[string]string{
+				"appid": testAppID, "mch_id": "10000100", "return_code": "SUCCESS",
+				"result_code": "SUCCESS", "out_trade_no": "ORD-1", "transaction_id": "42000",
+				"total_fee": "100",
+			}
+			maps.Copy(params, tt.override)
+			params["sign"] = sign(params, officialKey, SignTypeMD5)
+			data, _ := encodeXML(params)
+			p := newServerProvider(t, nil)
+
+			r := httptest.NewRequest(http.MethodPost, "/notify", bytes.NewReader(data))
+			if _, err := p.ParseNotify(t.Context(), r); !errors.Is(err, paymgr.ErrInvalidNotify) {
+				t.Fatalf("error = %v, want ErrInvalidNotify", err)
+			}
+		})
+	}
+}
+
+func TestParseRefundNotifyAppIDMismatch(t *testing.T) {
+	// 退款通知外层 appid 与配置不符时拒绝，不进入 req_info 解密
+	innerXML, _ := encodeXML(map[string]string{
+		"out_trade_no": "ORD-1", "out_refund_no": "R-1",
+		"refund_status": "SUCCESS", "refund_fee": "100", "total_fee": "100",
+	})
+	reqInfo := encryptECBForTest(t, innerXML, officialKey)
+	outer, _ := encodeXML(map[string]string{
+		"return_code": "SUCCESS", "appid": "wx-other-app", "mch_id": "10000100", "req_info": reqInfo,
+	})
+	p := newServerProvider(t, nil)
+
+	r := httptest.NewRequest(http.MethodPost, "/refund-notify", bytes.NewReader(outer))
+	if _, err := p.ParseRefundNotify(t.Context(), r); !errors.Is(err, paymgr.ErrInvalidNotify) {
+		t.Fatalf("error = %v, want ErrInvalidNotify", err)
+	}
+}
+
+func TestParseNotifyResultFail(t *testing.T) {
+	// result_code=FAIL 的通知映射为异常状态，失败原因写入 Metadata 便于排障
+	params := map[string]string{
+		"appid": testAppID, "mch_id": "10000100", "return_code": "SUCCESS",
+		"result_code": "FAIL", "err_code": "PARAM_ERROR", "err_code_des": "参数错误",
+		"out_trade_no": "ORD-1",
+	}
+	params["sign"] = sign(params, officialKey, SignTypeMD5)
+	data, _ := encodeXML(params)
+	p := newServerProvider(t, nil)
+
+	r := httptest.NewRequest(http.MethodPost, "/notify", bytes.NewReader(data))
+	got, err := p.ParseNotify(t.Context(), r)
+	if err != nil {
+		t.Fatalf("ParseNotify: %v", err)
+	}
+	if got.TradeStatus != paymgr.TradeStatusError {
+		t.Errorf("TradeStatus = %q, want %q", got.TradeStatus, paymgr.TradeStatusError)
+	}
+	if got.Metadata["err_code"] != "PARAM_ERROR" {
+		t.Errorf("Metadata[err_code] = %q, want PARAM_ERROR", got.Metadata["err_code"])
+	}
+	if got.Metadata["err_code_des"] != "参数错误" {
+		t.Errorf("Metadata[err_code_des] = %q, want 参数错误", got.Metadata["err_code_des"])
+	}
+}
+
+func TestDoRequestNon200(t *testing.T) {
+	// 网关 502 时报状态码而非解析非 XML 的 body
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+	}))
+	t.Cleanup(srv.Close)
+
+	p, err := NewProvider(t.Context(),
+		WithAppID(testAppID), WithMerchant("10000100", officialKey),
+		WithBaseURL(srv.URL), WithHTTPClient(srv.Client()),
+	)
+	if err != nil {
+		t.Fatalf("NewProvider: %v", err)
+	}
+
+	_, err = p.QueryOrder(t.Context(), &paymgr.QueryOrderRequest{OutTradeNo: "ORD-1"})
+	if err == nil || !strings.Contains(err.Error(), "502") {
+		t.Fatalf("error = %v, want contains 502", err)
+	}
+}
+
+func TestCloseOrderInvalidParam(t *testing.T) {
+	p := newServerProvider(t, nil)
+	tests := []struct {
+		name string
+		req  *paymgr.CloseOrderRequest
+	}{
+		{"nil_request", nil},
+		{"empty_out_trade_no", &paymgr.CloseOrderRequest{}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := p.CloseOrder(t.Context(), tt.req); !errors.Is(err, paymgr.ErrInvalidParam) {
+				t.Fatalf("error = %v, want ErrInvalidParam", err)
+			}
+		})
 	}
 }

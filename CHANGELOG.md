@@ -6,9 +6,29 @@
 
 ### Added
 
+- 新增哨兵错误 `paymgr.ErrChannelNotRegistered`，渠道未注册时可用 `errors.Is` 精确判断（原为裸字符串错误）
+- 新增 `paymgr.CloseOrderRequest.Validate()`，与其余请求类型的校验契约对齐，直连 Provider 的调用方也能获得同等校验
+- `paymgr.Manager` 零值即可直接使用（`var m paymgr.Manager` 后 `Register` 不再 panic）
+
 ### Changed
 
+- **回调身份校验加强**：三渠道 `ParseNotify` / `ParseRefundNotify` 在验签之外增加事件类型与商户/应用身份校验——微信 v3 核对 `event_type` 前缀与解密后 `mchid`/`appid`，微信 v2 核对报文 `appid`/`mch_id`，支付宝核对 `app_id`；不符返回 `paymgr.ErrInvalidNotify`。退款通知错投支付端点、同商户号下其它应用的通知由"静默通过"改为报错
+- 支付宝渠道 HTTP 客户端显式注入 30 秒超时（原使用无超时的 `http.DefaultClient`，网关挂起会导致调用方 goroutine 永久阻塞）
+- 支付宝下单 `ExpireAt` 距今不足 1 分钟（含已过期）时返回 `paymgr.ErrInvalidParam`（原静默忽略或生成网关必拒的 `"0m"`）
+- 微信 v2 支付通知 `result_code=FAIL` 时，失败原因 `err_code` / `err_code_des` 写入 `NotifyResult.Metadata` 便于排障
+- 三渠道 `NewProviderWithConfig` 值拷贝传入的 `*Config`，构造后修改原 Config 不再影响 Provider、不再构成数据竞争
+
 ### Fixed
+
+- 支付宝 `Refund` 响应的 `RefundAmount` 改为本次请求的退款金额——原实现误用渠道返回的 `refund_fee`（该字段是交易累计退款总额），多次部分退款时金额错误；同一退款单号重复调用的幂等返回（`fund_change=N`）语义在 GoDoc 与 README 中明确
+- 微信 v2 `QueryRefund` 在响应明细中找不到目标退款单号时返回 `ErrOrderNotFound`——原实现回退取第 0 笔明细，一笔订单退款超过 10 笔时会返回其它退款单的状态与金额
+- 微信 v3 `UnifiedOrder`（APP / Native）与 `Refund` 对 SDK 响应指针字段增加 nil 守卫，渠道返回成功但缺字段时不再 panic
+- 微信 v2 `WithNotifyURL` 配置的默认通知地址现在真实生效——原实现的回退逻辑位于参数校验之后，永不可达
+- `aggregate.Service.Resolve` 的全部纯校验移到 `BuildUnifiedOrder` 回调之前执行，服务配置错误时不再触发带副作用（如订单落库）的回调
+- 支付宝 JSAPI 下单补传 `passback_params`，调用方 Metadata 不再被静默丢弃
+- 支付宝 `QueryRefund` 缺 `OutRefundNo` 时返回 `ErrInvalidParam`，不再与"退款单不存在"混淆
+- 微信 v2 网关返回非 200 时错误信息携带 HTTP 状态码，不再只报 XML 解析失败
+- 微信 v2 `Refund` 缺商户证书的错误挂接 `paymgr.ErrInvalidParam` 哨兵，可被 `errors.Is` 判断
 
 ## [v1.4.3] - 2026-06-05
 

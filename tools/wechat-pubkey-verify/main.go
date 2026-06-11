@@ -23,7 +23,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -32,6 +31,7 @@ import (
 
 	"github.com/gtkit/go-pay/paymgr"
 	"github.com/gtkit/go-pay/wechat"
+	"github.com/gtkit/json"
 )
 
 const (

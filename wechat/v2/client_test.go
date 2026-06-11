@@ -99,6 +99,27 @@ func TestNewProviderWithOptions(t *testing.T) {
 	}
 }
 
+func TestNewProviderWithConfigCopiesConfig(t *testing.T) {
+	cfg := &Config{AppID: "a", MchID: "m", APIKey: officialKey}
+	p, err := NewProviderWithConfig(t.Context(), cfg)
+	if err != nil {
+		t.Fatalf("NewProviderWithConfig: %v", err)
+	}
+	if p.cfg == cfg {
+		t.Fatal("provider should hold a copy of config, not the original pointer")
+	}
+
+	// 构造后修改原 Config 字段不得影响 Provider
+	cfg.AppID = "mutated"
+	cfg.SignType = SignTypeHMACSHA256
+	if p.cfg.AppID != "a" {
+		t.Fatalf("provider cfg.AppID = %q after mutating original, want %q", p.cfg.AppID, "a")
+	}
+	if p.signType() != SignTypeMD5 {
+		t.Fatalf("signType = %q after mutating original, want MD5", p.signType())
+	}
+}
+
 func TestNewProviderStructConfig(t *testing.T) {
 	// *Config 实现 Option，结构体配置方式应可用，且默认 BaseURL/SignType 生效
 	p, err := NewProvider(t.Context(), &Config{AppID: "a", MchID: "m", APIKey: officialKey})

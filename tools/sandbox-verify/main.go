@@ -20,7 +20,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -29,6 +28,7 @@ import (
 
 	"github.com/gtkit/go-pay/alipay"
 	"github.com/gtkit/go-pay/paymgr"
+	"github.com/gtkit/json"
 )
 
 const (
