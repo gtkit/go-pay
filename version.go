@@ -1,3 +1,3 @@
 package gopay
 
-const Version = "v1.4.3"
+const Version = "v1.5.0"

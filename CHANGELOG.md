@@ -6,6 +6,14 @@
 
 ### Added
 
+### Changed
+
+### Fixed
+
+## [v1.5.0] - 2026-06-11
+
+### Added
+
 - 新增哨兵错误 `paymgr.ErrChannelNotRegistered`，渠道未注册时可用 `errors.Is` 精确判断（原为裸字符串错误）
 - 新增 `paymgr.CloseOrderRequest.Validate()`，与其余请求类型的校验契约对齐，直连 Provider 的调用方也能获得同等校验
 - `paymgr.Manager` 零值即可直接使用（`var m paymgr.Manager` 后 `Register` 不再 panic）
