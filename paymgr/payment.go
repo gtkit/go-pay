@@ -20,8 +20,8 @@ type Channel string
 const (
 	ChannelWechat Channel = "wxpay"
 	ChannelAlipay Channel = "alipay"
-	// ChannelWechatV2 是微信支付 V2 协议的渠道标识占位。本库不实装 V2 provider；
-	// 调用方如需兼容老商户号，自行实现 Provider 接口并 Register 到 manager。
+	// ChannelWechatV2 是微信支付 V2（XML 协议）的渠道标识，
+	// 对应实现见 github.com/gtkit/go-pay/wechat/v2，用于兼容仅支持 v2 的老商户号。
 	ChannelWechatV2 Channel = "wxpayv2"
 )
 

@@ -6,13 +6,29 @@
 
 ### Added
 
-- 新增微信支付 v2（XML 协议）渠道实现 `wechat/v2`，以 `paymgr.ChannelWechatV2`（`wxpayv2`）接入统一抽象层，兼容仅支持 v2 的老商户号。覆盖统一下单（APP / JSAPI / Native / H5）、订单查询、关单、退款、退款查询；内置 APP 与 JSAPI/小程序调起支付二次签名；支持支付回调验签与退款回调 AES-256-ECB 解密；签名算法可配（`v2.WithSignType`，默认 MD5，可切 HMAC-SHA256）。退款接口需配置商户 API 证书（`v2.WithCertPEM` / `v2.WithCertPath`）。零新增第三方依赖：HTTP 用标准库 `net/http`，随机串复用 `wechatpay-go/utils`，JSON 复用 `github.com/gtkit/json`
-- 微信支付新增「微信支付公钥」验签模式：配置公钥 ID 与公钥（路径 / PEM / `*rsa.PublicKey`）即自动启用，适配 2024 年起只下发公钥的新进件商户。新增 `wechat.WithPublicKeyID` / `WithPublicKeyPath` / `WithPublicKeyPEM` / `WithPublicKey` 选项，与现有平台证书选项二选一、公钥优先
-- 微信支付 `Config.Validate()` 增加 `MchAPIv3Key` 必须为 32 字节的校验，将原本延迟到初始化阶段的 `crypto/aes: invalid key size` 错误前移为明确提示
-
 ### Changed
 
 ### Fixed
+
+## [v1.4.3] - 2026-06-05
+
+> 注：本版本及 v1.4.1 包含新增导出 API，按 SemVer 应升 MINOR 版本号；tag 已发布不可变更，特此说明。
+
+### Added
+
+- 新增微信支付 v2（XML 协议）渠道实现 `wechat/v2`，以 `paymgr.ChannelWechatV2`（`wxpayv2`）接入统一抽象层，兼容仅支持 v2 的老商户号。覆盖统一下单（APP / JSAPI / Native / H5）、订单查询、关单、退款、退款查询；内置 APP 与 JSAPI/小程序调起支付二次签名；支持支付回调验签与退款回调 AES-256-ECB 解密；签名算法可配（`v2.WithSignType`，默认 MD5，可切 HMAC-SHA256）。退款接口需配置商户 API 证书（`v2.WithCertPEM` / `v2.WithCertPath`）。零新增第三方依赖：HTTP 用标准库 `net/http`，随机串复用 `wechatpay-go/utils`，JSON 复用 `github.com/gtkit/json`
+
+## [v1.4.2] - 2026-06-04
+
+### Fixed
+
+- 微信支付 `Config.Validate()` 增加 `MchAPIv3Key` 必须为 32 字节的校验，将原本延迟到初始化阶段的 `crypto/aes: invalid key size` 错误前移为明确提示
+
+## [v1.4.1] - 2026-06-04
+
+### Added
+
+- 微信支付新增「微信支付公钥」验签模式：配置公钥 ID 与公钥（路径 / PEM / `*rsa.PublicKey`）即自动启用，适配 2024 年起只下发公钥的新进件商户。新增 `wechat.WithPublicKeyID` / `WithPublicKeyPath` / `WithPublicKeyPEM` / `WithPublicKey` 选项，与现有平台证书选项二选一、公钥优先
 
 ## [v1.4.0] - 2026-05-09
 
