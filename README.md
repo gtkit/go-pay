@@ -179,6 +179,12 @@ err = mgr.ACKNotify(paymgr.ChannelWechat, w)
 
 同时为了兼容旧用法，`*wechat.Config` 和 `*alipay.Config` 仍然可以直接传给 `NewProvider(...)`，或者使用 `NewProviderWithConfig(...)`。
 
+### 5.1 配置打印自动脱敏
+
+`wechat.Config`、`wechat/v2.Config`、`alipay.Config` 均实现了 `fmt.Stringer` / `fmt.GoStringer`：用 `%v`、`%+v`、`%s`、`%#v` 打印（含写日志）时输出脱敏摘要——私钥、API 密钥显示为 `"****"`，证书等大块内容仅标注 `<set>`，AppID、商户号、文件路径等排障字段原样保留。
+
+注意边界：脱敏只对 `fmt` 系列打印生效，`json.Marshal(cfg)` 或反射遍历仍会暴露字段原文，请勿将 Config 序列化输出。
+
 下面分别说明微信和支付宝的配置方式。
 
 ## 6. 微信支付配置
@@ -1280,3 +1286,57 @@ v1.3.x（`v1.3.0` / `v1.3.1` / `v1.3.2`）曾尝试将支付宝底层 SDK 切换
 3. 公钥模式被强制软降级，对仅有公钥模式商户号的下游造成阻塞
 
 v1.4.0 切回 smartwalle，单 SDK 路线最简、最轻、对公钥商户号兼容。v1.3.x 三个 tag 留在仓库历史，作为实验性中间态参考。
+
+## 16. 自定义渠道接入
+
+`paymgr.Channel` 是开放的字符串类型，`Manager` 对渠道值没有白名单限制——接入新支付渠道（银联、PayPal、Stripe 等）不需要改本库代码，实现 `paymgr.Provider` 接口并注册即可。
+
+### 16.1 最小接入步骤
+
+推荐嵌入 `paymgr.UnimplementedProvider` 基座，只覆写渠道支持的能力；未来 `Provider` 接口新增方法时，嵌入者自动获得默认实现（返回 `ErrNotSupported`），编译不会被破坏：
+
+```go
+const ChannelUnionPay = paymgr.Channel("unionpay")
+
+type UnionPayProvider struct {
+    paymgr.UnimplementedProvider // 未覆写的能力默认返回 ErrNotSupported
+
+    client *unionpay.Client // 你的渠道 SDK
+}
+
+func (p *UnionPayProvider) Channel() paymgr.Channel { return ChannelUnionPay }
+
+func (p *UnionPayProvider) UnifiedOrder(ctx context.Context, req *paymgr.UnifiedOrderRequest) (*paymgr.UnifiedOrderResponse, error) {
+    if err := req.Validate(); err != nil {
+        return nil, err
+    }
+    // 调用渠道 SDK ...
+}
+
+// 注册后与内置渠道完全同等使用
+mgr.Register(&UnionPayProvider{client: c})
+resp, err := mgr.UnifiedOrder(ctx, ChannelUnionPay, req)
+```
+
+注意：`Channel()` 没有默认实现，必须自行提供——渠道标识是注册身份，不能有默认值。
+
+### 16.2 实现契约 checklist
+
+实现方法时必须遵守以下约定，保证与内置渠道行为一致：
+
+| 契约 | 说明 |
+|------|------|
+| 金额单位为分 | 所有请求/响应金额是 `int64` 分；渠道按元计价的，在 Provider 内换算（参考 `alipay` 包的 `centToYuan`） |
+| 入口先校验 | 每个请求方法第一行调用 `req.Validate()`，非法请求不得触达渠道 |
+| `ErrInvalidParam` | 参数错误用它包装（`Validate()` 已自动处理） |
+| `ErrOrderNotFound` | 订单/退款单不存在时返回，不要把渠道的"查无此单"当成功响应透传 |
+| `ErrNotSupported` | 渠道不支持的能力返回它（嵌入基座后未覆写的方法自动如此） |
+| `NewChannelError` | 渠道业务失败用 `paymgr.NewChannelError(渠道, 错误码, 错误信息, 原始错误)` 包装，调用方可统一提取错误码 |
+| 验签 + 身份核对 | `ParseNotify` / `ParseRefundNotify` 必须完成签名校验，并核对通知中的商户/应用标识，防止同主体其它应用的通知被误收 |
+| 并发安全 | 所有方法必须可被多个 goroutine 并发调用（`Manager` 在锁外调用 Provider） |
+
+只依赖部分能力的业务代码，参数可声明为小接口 `paymgr.OrderProvider` / `paymgr.RefundProvider` / `paymgr.NotifyParser`，任意完整 Provider 都能传入。
+
+### 16.3 边界说明
+
+`aggregate` 聚合扫码包只编排内置的微信/支付宝渠道（聚合码是两者特有的场景），自定义渠道经 `paymgr.Manager` 的全部能力可用，但不参与 `aggregate` 的渠道决策。

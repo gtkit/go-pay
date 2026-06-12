@@ -16,3 +16,18 @@ AGENTS.md
 CLAUDE.md
 tools/openspec/
 coverage.out
+
+# 安全基线: 环境变量与密钥文件禁止入库
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets.*
+credentials.*
+
+# 构建与测试产物
+bin/
+dist/
+build/
+coverage/

@@ -10,6 +10,20 @@
 
 ### Fixed
 
+## [v1.6.0] - 2026-06-12
+
+### Added
+
+- 新增能力小接口 `paymgr.OrderProvider` / `paymgr.RefundProvider` / `paymgr.NotifyParser`，`paymgr.Provider` 重组为其组合（方法集不变，既有实现与调用方不受影响）；业务代码可按能力声明依赖
+- 新增可嵌入基座 `paymgr.UnimplementedProvider`：自定义渠道嵌入后只需覆写支持的能力，未覆写的方法返回 `ErrNotSupported`，未来接口新增方法不再破坏外部实现的编译
+- README 新增"自定义渠道接入"章节：最小实现步骤、契约 checklist 与 `aggregate` 聚合层的渠道边界说明
+- 三个渠道的 `Config`（`alipay` / `wechat` / `wechat/v2`）实现 `fmt.Stringer` / `fmt.GoStringer`：以 `%v` / `%+v` / `%s` / `%#v` 打印时输出脱敏摘要，私钥与 API 密钥显示 `"****"`、证书内容仅标注 `<set>`，避免日志误打明文密钥（注意：`json.Marshal` 与反射遍历不受保护）
+
+### Fixed
+
+- 支付宝与微信 v3 Provider 直连调用（绕过 Manager）时补齐请求参数校验：nil 请求、非法金额、空退款单号等现在返回 `paymgr.ErrInvalidParam` 包装错误，不再 panic 或把非法请求发往渠道（与微信 v2 行为对齐）
+- `paymgr.Manager.Register` 传入 nil Provider（含 typed nil）时安全忽略，不再 panic
+
 ## [v1.5.0] - 2026-06-11
 
 ### Added
@@ -189,6 +203,11 @@ func (p *YourProvider) ParseRefundNotify(ctx context.Context, r *http.Request) (
 
 详见 `git log v1.0.3`。
 
+[v1.6.0]: https://github.com/gtkit/go-pay/releases/tag/v1.6.0
+[v1.5.0]: https://github.com/gtkit/go-pay/releases/tag/v1.5.0
+[v1.4.3]: https://github.com/gtkit/go-pay/releases/tag/v1.4.3
+[v1.4.2]: https://github.com/gtkit/go-pay/releases/tag/v1.4.2
+[v1.4.1]: https://github.com/gtkit/go-pay/releases/tag/v1.4.1
 [v1.4.0]: https://github.com/gtkit/go-pay/releases/tag/v1.4.0
 [v1.3.2]: https://github.com/gtkit/go-pay/releases/tag/v1.3.2
 [v1.3.1]: https://github.com/gtkit/go-pay/releases/tag/v1.3.1

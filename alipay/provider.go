@@ -17,7 +17,9 @@ import (
 
 // Config 支付宝配置.
 //
-// Config 含应用私钥等敏感凭据，请勿整体打印或写入日志。
+// Config 含应用私钥等敏感凭据。fmt 系列打印（%v / %+v / %s / %#v）经
+// String / GoString 输出脱敏摘要；但 json.Marshal 与反射遍历仍会暴露
+// 字段原文，请勿将 Config 序列化输出。
 type Config struct {
 	AppID          string // 支付宝应用 ID
 	PrivateKey     string // 应用私钥内容
@@ -82,6 +84,41 @@ func (c *Config) Validate() error {
 // UseCertMode 是否使用证书模式.
 func (c *Config) UseCertMode() bool {
 	return c.hasAppCert() && c.hasRootCert() && c.hasAlipayCert()
+}
+
+// String 实现 fmt.Stringer，输出脱敏后的配置摘要：私钥显示 "****"，
+// 证书等大块内容仅标注 <set>，路径与 ID 原样输出。
+//
+// 脱敏仅对 fmt 系列打印生效，json.Marshal 与反射遍历仍会暴露原文；
+// Config 新增字段时需同步维护本方法。
+func (c Config) String() string {
+	return fmt.Sprintf("alipay.Config{AppID:%q, IsProduction:%t, PrivateKey:%s, PrivateKeyPath:%q, "+
+		"AppCertPublicKey:%s, AppCertPublicKeyPath:%q, AlipayRootCert:%s, AlipayRootCertPath:%q, "+
+		"AlipayCertPublicKey:%s, AlipayCertPublicKeyPath:%q, AlipayPublicKey:%s}",
+		c.AppID, c.IsProduction, redact(c.PrivateKey), c.PrivateKeyPath,
+		presence(c.AppCertPublicKey != ""), c.AppCertPublicKeyPath,
+		presence(c.AlipayRootCert != ""), c.AlipayRootCertPath,
+		presence(c.AlipayCertPublicKey != ""), c.AlipayCertPublicKeyPath,
+		presence(c.AlipayPublicKey != ""))
+}
+
+// GoString 实现 fmt.GoStringer，%#v 同样输出脱敏摘要。
+func (c Config) GoString() string { return c.String() }
+
+// redact 敏感字段脱敏：空值显示 ""，非空显示 "****"。
+func redact(s string) string {
+	if s == "" {
+		return `""`
+	}
+	return `"****"`
+}
+
+// presence 大块内容仅标注是否已配置。
+func presence(set bool) string {
+	if set {
+		return "<set>"
+	}
+	return "<nil>"
 }
 
 // Provider 支付宝支付提供者.
@@ -234,6 +271,9 @@ func (p *Provider) Channel() paymgr.Channel {
 
 // UnifiedOrder 统一下单.
 func (p *Provider) UnifiedOrder(ctx context.Context, req *paymgr.UnifiedOrderRequest) (*paymgr.UnifiedOrderResponse, error) {
+	if err := req.Validate(); err != nil {
+		return nil, err
+	}
 	resp := &paymgr.UnifiedOrderResponse{
 		Channel: paymgr.ChannelAlipay,
 	}
@@ -387,6 +427,9 @@ func (p *Provider) UnifiedOrder(ctx context.Context, req *paymgr.UnifiedOrderReq
 
 // QueryOrder 查询订单.
 func (p *Provider) QueryOrder(ctx context.Context, req *paymgr.QueryOrderRequest) (*paymgr.QueryOrderResponse, error) {
+	if err := req.Validate(); err != nil {
+		return nil, err
+	}
 	trade := alipay.TradeQuery{}
 	if req.TransactionID != "" {
 		trade.TradeNo = req.TransactionID
@@ -436,6 +479,9 @@ func (p *Provider) QueryOrder(ctx context.Context, req *paymgr.QueryOrderRequest
 
 // CloseOrder 关闭订单.
 func (p *Provider) CloseOrder(ctx context.Context, req *paymgr.CloseOrderRequest) error {
+	if err := req.Validate(); err != nil {
+		return err
+	}
 	trade := alipay.TradeClose{}
 	trade.OutTradeNo = req.OutTradeNo
 
@@ -465,6 +511,9 @@ func (p *Provider) CloseOrder(ctx context.Context, req *paymgr.CloseOrderRequest
 // 请求的退款金额（支付宝返回的 refund_fee 是该笔交易的累计退款总额，
 // 语义不符，不采用）。需要精确对账时请使用 QueryRefund。
 func (p *Provider) Refund(ctx context.Context, req *paymgr.RefundRequest) (*paymgr.RefundResponse, error) {
+	if err := req.Validate(); err != nil {
+		return nil, err
+	}
 	trade := alipay.TradeRefund{}
 	trade.OutRequestNo = req.OutRefundNo
 	trade.RefundAmount = centToYuan(req.RefundAmount)
@@ -502,8 +551,8 @@ func (p *Provider) Refund(ctx context.Context, req *paymgr.RefundRequest) (*paym
 // 调用 alipay.trade.fastpay.refund.query，按退款请求号（OutRequestNo 即商户退款单号）查询。
 // 未查到退款记录时返回 ErrOrderNotFound。
 func (p *Provider) QueryRefund(ctx context.Context, req *paymgr.QueryRefundRequest) (*paymgr.QueryRefundResponse, error) {
-	if req == nil || req.OutRefundNo == "" {
-		return nil, fmt.Errorf("%w: out_refund_no is required", paymgr.ErrInvalidParam)
+	if err := req.Validate(); err != nil {
+		return nil, err
 	}
 
 	trade := alipay.TradeFastPayRefundQuery{}

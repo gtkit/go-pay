@@ -104,6 +104,71 @@ func TestDecodePassbackParamsBackwardCompatible(t *testing.T) {
 	}
 }
 
+func TestProviderRequestValidation(t *testing.T) {
+	// 空 Provider 的 client 为 nil：若校验未短路、请求触达 SDK 会直接 panic，
+	// 因此本测试同时验证"返回 ErrInvalidParam"与"不触达渠道 SDK"。
+	p := &Provider{}
+
+	tests := []struct {
+		name string
+		call func(ctx context.Context) error
+	}{
+		{"unified_order_nil_request", func(ctx context.Context) error {
+			_, err := p.UnifiedOrder(ctx, nil)
+			return err
+		}},
+		{"unified_order_invalid_amount", func(ctx context.Context) error {
+			_, err := p.UnifiedOrder(ctx, &paymgr.UnifiedOrderRequest{
+				OutTradeNo: "ORD-1", TotalAmount: 0, Subject: "demo",
+				NotifyURL: "https://example.com/notify",
+			})
+			return err
+		}},
+		{"query_order_nil_request", func(ctx context.Context) error {
+			_, err := p.QueryOrder(ctx, nil)
+			return err
+		}},
+		{"query_order_missing_keys", func(ctx context.Context) error {
+			_, err := p.QueryOrder(ctx, &paymgr.QueryOrderRequest{})
+			return err
+		}},
+		{"close_order_nil_request", func(ctx context.Context) error {
+			return p.CloseOrder(ctx, nil)
+		}},
+		{"close_order_missing_out_trade_no", func(ctx context.Context) error {
+			return p.CloseOrder(ctx, &paymgr.CloseOrderRequest{})
+		}},
+		{"refund_nil_request", func(ctx context.Context) error {
+			_, err := p.Refund(ctx, nil)
+			return err
+		}},
+		{"refund_amount_exceeds_total", func(ctx context.Context) error {
+			_, err := p.Refund(ctx, &paymgr.RefundRequest{
+				OutTradeNo: "ORD-1", OutRefundNo: "R-1",
+				RefundAmount: 200, TotalAmount: 100,
+			})
+			return err
+		}},
+		{"query_refund_nil_request", func(ctx context.Context) error {
+			_, err := p.QueryRefund(ctx, nil)
+			return err
+		}},
+		{"query_refund_missing_out_refund_no", func(ctx context.Context) error {
+			_, err := p.QueryRefund(ctx, &paymgr.QueryRefundRequest{})
+			return err
+		}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.call(t.Context())
+			if !errors.Is(err, paymgr.ErrInvalidParam) {
+				t.Fatalf("err = %v, want wrapped ErrInvalidParam", err)
+			}
+		})
+	}
+}
+
 func TestMapAlipayRefundStatus(t *testing.T) {
 	tests := map[string]paymgr.RefundStatus{
 		"REFUND_SUCCESS":    paymgr.RefundStatusSuccess,

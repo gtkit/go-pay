@@ -33,8 +33,9 @@ jobs:
       - name: Test with race detector
         run: go test -race -count=1 -timeout=5m ./...
 
+      # 覆盖率只统计库包；example 与 tools/* 是演示/排障入口，无测试，不计入口径
       - name: Coverage smoke
-        run: go test -coverprofile=coverage.out ./...
+        run: go test -coverprofile=coverage.out ./aggregate/... ./alipay/... ./paymgr/... ./wechat/...
 
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v9.2.0

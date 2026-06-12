@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"maps"
 	"net/http"
+	"reflect"
 	"slices"
 	"sync"
 )
@@ -40,13 +41,32 @@ func NewManager() *Manager {
 // Register 注册支付渠道提供者
 //
 // 同一渠道重复注册会覆盖旧的提供者。
+// nil Provider（含 typed nil，如未初始化的 *alipay.Provider）会被忽略，
+// 不注册、不 panic；可通过 Channels 或 Provider 方法确认注册结果。
 func (m *Manager) Register(p Provider) {
+	if isNilProvider(p) {
+		return
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.providers == nil {
 		m.providers = make(map[Channel]Provider)
 	}
 	m.providers[p.Channel()] = p
+}
+
+// isNilProvider 判断接口值是否为 nil 或内部承载 typed nil。
+func isNilProvider(p Provider) bool {
+	if p == nil {
+		return true
+	}
+	v := reflect.ValueOf(p)
+	switch v.Kind() {
+	case reflect.Pointer, reflect.Map, reflect.Func, reflect.Chan, reflect.Slice, reflect.UnsafePointer:
+		return v.IsNil()
+	default:
+		return false
+	}
 }
 
 // Deregister 注销支付渠道提供者

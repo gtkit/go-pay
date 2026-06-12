@@ -261,17 +261,8 @@ type NotifyResult struct {
 
 // --- 核心接口 ---
 
-// Provider 统一支付提供者接口
-//
-// 所有支付渠道必须实现此接口，业务层只依赖此接口。
-// 设计上每个方法都接收 context.Context，支持超时控制和链路追踪。
-//
-// 并发契约：实现必须可被多个 goroutine 并发调用（Manager 会在锁外
-// 并发调用 Provider 的全部方法）。
-type Provider interface {
-	// Channel 返回当前提供者的支付渠道标识
-	Channel() Channel
-
+// OrderProvider 订单能力接口：下单、查询、关单。
+type OrderProvider interface {
 	// UnifiedOrder 统一下单
 	//
 	// 根据 TradeType 创建预支付订单，返回唤起支付所需的参数。
@@ -286,7 +277,10 @@ type Provider interface {
 	//
 	// 关闭未支付的订单，已支付的订单不能关闭。
 	CloseOrder(ctx context.Context, req *CloseOrderRequest) error
+}
 
+// RefundProvider 退款能力接口：退款、退款查询。
+type RefundProvider interface {
 	// Refund 申请退款
 	//
 	// 对已支付的订单发起退款，支持部分退款。
@@ -296,7 +290,10 @@ type Provider interface {
 	//
 	// 按商户退款单号查询退款状态。
 	QueryRefund(ctx context.Context, req *QueryRefundRequest) (*QueryRefundResponse, error)
+}
 
+// NotifyParser 异步通知能力接口：解析支付/退款通知与回写响应。
+type NotifyParser interface {
 	// ParseNotify 解析异步通知
 	//
 	// 从 HTTP 请求中解析并验签支付结果通知。
@@ -315,4 +312,25 @@ type Provider interface {
 	// 向支付平台回写"已收到通知"的成功响应。
 	// 必须在 ParseNotify 成功后调用，否则平台会持续重发通知。
 	ACKNotify(w http.ResponseWriter)
+}
+
+// Provider 统一支付提供者接口
+//
+// 所有支付渠道必须实现此接口，业务层只依赖此接口。
+// 设计上每个方法都接收 context.Context，支持超时控制和链路追踪。
+// 只依赖部分能力的业务代码可改为声明 OrderProvider / RefundProvider /
+// NotifyParser 小接口。
+//
+// 自定义渠道建议嵌入 UnimplementedProvider 后只覆写支持的方法，
+// 未来接口新增能力方法时无需改动即可保持编译通过。
+//
+// 并发契约：实现必须可被多个 goroutine 并发调用（Manager 会在锁外
+// 并发调用 Provider 的全部方法）。
+type Provider interface {
+	// Channel 返回当前提供者的支付渠道标识
+	Channel() Channel
+
+	OrderProvider
+	RefundProvider
+	NotifyParser
 }

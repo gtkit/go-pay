@@ -97,6 +97,21 @@ func TestManagerZeroValueRegister(t *testing.T) {
 	}
 }
 
+func TestManagerRegisterNilProvider(t *testing.T) {
+	mgr := NewManager()
+
+	mgr.Register(nil)
+	if got := mgr.Channels(); len(got) != 0 {
+		t.Fatalf("Channels() = %v after Register(nil), want empty", got)
+	}
+
+	var typedNil *stubProvider
+	mgr.Register(typedNil)
+	if got := mgr.Channels(); len(got) != 0 {
+		t.Fatalf("Channels() = %v after Register(typed nil), want empty", got)
+	}
+}
+
 func TestManagerProviderUnregistered(t *testing.T) {
 	mgr := NewManager()
 

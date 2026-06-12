@@ -34,7 +34,9 @@ import (
 
 // Config 微信支付配置
 //
-// Config 含商户私钥与 APIv3 密钥等敏感凭据，请勿整体打印或写入日志。
+// Config 含商户私钥与 APIv3 密钥等敏感凭据。fmt 系列打印（%v / %+v / %s / %#v）
+// 经 String / GoString 输出脱敏摘要；但 json.Marshal 与反射遍历仍会暴露
+// 字段原文，请勿将 Config 序列化输出。
 type Config struct {
 	AppID                    string            // 开放平台应用的 appid（微信开放平台注册的移动应用）
 	MchID                    string            // 商户号
@@ -117,6 +119,41 @@ func (c *Config) Validate() error {
 			"or wechat pay public key (wechat_pay_public_key/_pem/_path) is required")
 	}
 	return nil
+}
+
+// String 实现 fmt.Stringer，输出脱敏后的配置摘要：密钥显示 "****"，
+// 证书与已解析密钥等大块内容仅标注 <set>，路径与 ID 原样输出。
+//
+// 脱敏仅对 fmt 系列打印生效，json.Marshal 与反射遍历仍会暴露原文；
+// Config 新增字段时需同步维护本方法。
+func (c Config) String() string {
+	return fmt.Sprintf("wechat.Config{AppID:%q, MchID:%q, MchCertSerialNumber:%q, MchAPIv3Key:%s, "+
+		"MchPrivateKeyPath:%q, MchPrivateKeyPEM:%s, MchPrivateKey:%s, "+
+		"WechatPayCertificatePath:%q, WechatPayCertificatePEM:%s, WechatPayCertificate:%s, "+
+		"WechatPayPublicKeyID:%q, WechatPayPublicKeyPath:%q, WechatPayPublicKeyPEM:%s, WechatPayPublicKey:%s}",
+		c.AppID, c.MchID, c.MchCertSerialNumber, redact(c.MchAPIv3Key),
+		c.MchPrivateKeyPath, redact(c.MchPrivateKeyPEM), presence(c.MchPrivateKey != nil),
+		c.WechatPayCertificatePath, presence(c.WechatPayCertificatePEM != ""), presence(c.WechatPayCertificate != nil),
+		c.WechatPayPublicKeyID, c.WechatPayPublicKeyPath, presence(c.WechatPayPublicKeyPEM != ""), presence(c.WechatPayPublicKey != nil))
+}
+
+// GoString 实现 fmt.GoStringer，%#v 同样输出脱敏摘要。
+func (c Config) GoString() string { return c.String() }
+
+// redact 敏感字段脱敏：空值显示 ""，非空显示 "****"。
+func redact(s string) string {
+	if s == "" {
+		return `""`
+	}
+	return `"****"`
+}
+
+// presence 大块内容仅标注是否已配置。
+func presence(set bool) string {
+	if set {
+		return "<set>"
+	}
+	return "<nil>"
 }
 
 // hasPublicKeySource 报告是否提供了微信支付公钥来源（对象 / PEM / 路径任一）。
@@ -338,6 +375,9 @@ func (p *Provider) Channel() paymgr.Channel {
 //
 // 当前支持 APP、JSAPI、小程序/公众号、Native 扫码和 H5 支付。
 func (p *Provider) UnifiedOrder(ctx context.Context, req *paymgr.UnifiedOrderRequest) (*paymgr.UnifiedOrderResponse, error) {
+	if err := req.Validate(); err != nil {
+		return nil, err
+	}
 	resp := &paymgr.UnifiedOrderResponse{
 		Channel: paymgr.ChannelWechat,
 	}
@@ -483,6 +523,9 @@ func (p *Provider) UnifiedOrder(ctx context.Context, req *paymgr.UnifiedOrderReq
 // 使用 app.AppApiService 查询，返回通用 pays.Transaction。
 // 微信支付的查询 API 与支付方式无关，底层调用相同的 endpoint。
 func (p *Provider) QueryOrder(ctx context.Context, req *paymgr.QueryOrderRequest) (*paymgr.QueryOrderResponse, error) {
+	if err := req.Validate(); err != nil {
+		return nil, err
+	}
 	svc := app.AppApiService{Client: p.client}
 
 	var (
@@ -530,6 +573,9 @@ func (p *Provider) QueryOrder(ctx context.Context, req *paymgr.QueryOrderRequest
 
 // CloseOrder 关闭订单
 func (p *Provider) CloseOrder(ctx context.Context, req *paymgr.CloseOrderRequest) error {
+	if err := req.Validate(); err != nil {
+		return err
+	}
 	svc := app.AppApiService{Client: p.client}
 	_, err := svc.CloseOrder(ctx, app.CloseOrderRequest{
 		Mchid:      core.String(p.cfg.MchID),
@@ -546,6 +592,9 @@ func (p *Provider) CloseOrder(ctx context.Context, req *paymgr.CloseOrderRequest
 //
 // 退款接口与支付方式无关，使用 refunddomestic 包。
 func (p *Provider) Refund(ctx context.Context, req *paymgr.RefundRequest) (*paymgr.RefundResponse, error) {
+	if err := req.Validate(); err != nil {
+		return nil, err
+	}
 	svc := refunddomestic.RefundsApiService{Client: p.client}
 
 	createReq := refunddomestic.CreateRequest{
@@ -585,6 +634,9 @@ func (p *Provider) Refund(ctx context.Context, req *paymgr.RefundRequest) (*paym
 //
 // 通过商户退款单号查询退款状态，调用 refunddomestic.QueryByOutRefundNo。
 func (p *Provider) QueryRefund(ctx context.Context, req *paymgr.QueryRefundRequest) (*paymgr.QueryRefundResponse, error) {
+	if err := req.Validate(); err != nil {
+		return nil, err
+	}
 	svc := refunddomestic.RefundsApiService{Client: p.client}
 
 	result, _, err := svc.QueryByOutRefundNo(ctx, refunddomestic.QueryByOutRefundNoRequest{
